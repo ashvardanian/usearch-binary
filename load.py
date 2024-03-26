@@ -1,5 +1,6 @@
 import os
 import subprocess
+import multiprocessing
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
@@ -43,6 +44,8 @@ def process_file(file_path: str, embeddings_column: str):
 
 def download_file(file_url: str, local_file: str, embeddings_column: str):
     if os.path.exists(local_file):
+        print(f"Skipping {local_file} download - already present")
+        process_file(local_file, embeddings_column)
         return local_file
     os.makedirs(os.path.dirname(local_file), exist_ok=True)
     # Removed '-c' flag to prevent continuing from a potentially corrupted file
@@ -52,8 +55,9 @@ def download_file(file_url: str, local_file: str, embeddings_column: str):
     return local_file
 
 
-def download_files(file_urls: list, local_files: list, embeddings_column: str):
-    with ThreadPoolExecutor(max_workers=8) as executor:
+def download_files(file_urls: list, local_files: list, embeddings_column: str = "emb"):
+    workers = multiprocessing.cpu_count() - 2
+    with ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_url = {
             executor.submit(
                 download_file,
@@ -75,15 +79,19 @@ def download_files(file_urls: list, local_files: list, embeddings_column: str):
 def download_mixedbread():
     base_url = "https://huggingface.co/datasets/mixedbread-ai/wikipedia-embed-en-2023-11/resolve/main/data/train-{index:05d}-of-00721.parquet?download=true"
     save_path = "mixedbread/{index:05d}.parquet"
-    file_urls = [base_url.format(index=index) for index in range(721)]
-    local_files = [save_path.format(index=index) for index in range(721)]
-    download_files(file_urls, local_files, "emb")
+    file_urls = [base_url.format(index=i) for i in range(721)]
+    local_files = [save_path.format(index=i) for i in range(721)]
+    download_files(file_urls, local_files)
 
 
-def download_cohere():
-    pass
+def download_cohere(language: str = "en"):
+    base_url = "https://huggingface.co/datasets/Cohere/wikipedia-2023-11-embed-multilingual-v3/resolve/main/{language}/{index:04d}.parquet?download=true"
+    save_path = "cohere/{language}-{index:05d}.parquet"
+    file_urls = [base_url.format(index=i, language=language) for i in range(415)]
+    local_files = [save_path.format(index=i, language=language) for i in range(415)]
+    download_files(file_urls, local_files)
 
 
 if __name__ == "__main__":
-    download_mixedbread()
     download_cohere()
+    download_mixedbread()
