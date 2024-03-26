@@ -1,0 +1,5 @@
+pandas
+pyarrow
+datasets
+usearch
+faiss-cpu
