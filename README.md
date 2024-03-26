@@ -1,14 +1,17 @@
 # Binary Vector Search Examples for USearch
 
-This repository contains an example for constructing a binary vector-search index for WikiPedia embeddings by Co:here and MixedBread.
+This repository contains examples for constructing binary vector-search indicies for WikiPedia embeddings available on the HuggingFace portal:
 
---
+- [Co:here](https://huggingface.co/datasets/Cohere/wikipedia-2023-11-embed-multilingual-v3)
+- [MixedBread.ai](https://huggingface.co/datasets/mixedbread-ai/wikipedia-embed-en-2023-11)
+
+---
 
 To view the results, check out the [`bench.ipynb`](bench.ipynb).
 To replicate the results, first, download the data:
 
 ```sh
-$ pip install -r requirements.tx
+$ pip install -r requirements.txt
 $ python download.py
 $ ls -alh mixedbread | head -n 1
 > total 15G
