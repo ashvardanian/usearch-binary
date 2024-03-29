@@ -4,3 +4,7 @@ pyarrow
 datasets
 usearch
 faiss-cpu
+
+# Micro-kernels:
+cppyy
+numba
