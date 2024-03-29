@@ -42,3 +42,9 @@ inline uint64_t hamming_distance(uint8_t const* first_vector, uint8_t const* sec
     return _mm512_reduce_add_epi64(population);
 }
 ```
+
+To run the kernel benchmarks, use the following command:
+
+```sh
+$ python kernel.py
+```

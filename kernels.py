@@ -46,12 +46,18 @@ def test_numba():
     c[0] ^= 0xFF  # Invert all bits in the first byte; distance should be 8
 
     # Test each function
-    numba_result = hamming_numba8bit(a, b)
-    assert numba_result == 0, "hamming_serial8bit failed on identical vectors"
+    numba8bit_result = hamming_numba8bit(a, b)
+    numba64bit_result = hamming_numba64bit(a, b)
+    assert numba8bit_result == 0, "hamming_numba8bit failed on identical vectors"
+    assert numba64bit_result == 0, "hamming_numba64bit failed on identical vectors"
 
     # Now test with vectors that should have a distance of 8
-    numba_result = hamming_numba8bit(a, c)
-    assert numba_result == 8, "hamming_serial8bit failed on vectors with distance 8"
+    numba8bit_result = hamming_numba8bit(a, c)
+    numba64bit_result = hamming_numba64bit(a, c)
+    assert numba8bit_result == 8, "hamming_numba8bit failed on vectors with distance 8"
+    assert (
+        numba64bit_result == 8
+    ), "hamming_numba64bit failed on vectors with distance 8"
     print("Numba tests passed!")
 
 
@@ -80,10 +86,10 @@ static float hamming_serial64bit(uint8_t const * a, uint8_t const * b) {
 }
 """
 
-hamming_avx512vpopcnt = """
+hamming_avx512vpopcnt_1024d = """
 #include <immintrin.h>
 __attribute__((target("avx512f,avx512vl,bmi2,avx512bw,avx512vpopcntdq")))
-static float hamming_avx512vpopcnt(uint8_t const * first_vector, uint8_t const * second_vector) {
+static float hamming_avx512vpopcnt_1024d(uint8_t const * first_vector, uint8_t const * second_vector) {
     __m512i const first_start = _mm512_loadu_si512((__m512i const *)(first_vector));
     __m512i const first_end = _mm512_loadu_si512((__m512i const *)(first_vector + 64));
     __m512i const second_start = _mm512_loadu_si512((__m512i const *)(second_vector));
@@ -97,9 +103,28 @@ static float hamming_avx512vpopcnt(uint8_t const * first_vector, uint8_t const *
 }
 """
 
+hamming_avx512vpopcnt_768d = """
+#include <immintrin.h>
+__attribute__((target("avx512f,avx512vl,bmi2,avx512bw,avx512vpopcntdq")))
+static float hamming_avx512vpopcnt_768d(uint8_t const * first_vector, uint8_t const * second_vector) {
+    __mmask8 const mask_end = 0xF0;
+    __m512i const first_start = _mm512_loadu_si512((__m512i const *)(first_vector));
+    __m512i const first_end = _mm512_maskz_loadu_epi64(mask_end, (__m512i const *)(first_vector + 64));
+    __m512i const second_start = _mm512_loadu_si512((__m512i const *)(second_vector));
+    __m512i const second_end = _mm512_maskz_loadu_epi64(mask_end, (__m512i const *)(second_vector + 64));
+    __m512i const differences_start = _mm512_xor_epi64(first_start, second_start);
+    __m512i const differences_end = _mm512_xor_epi64(first_end, second_end);
+    __m512i const population_start = _mm512_popcnt_epi64(differences_start);
+    __m512i const population_end = _mm512_popcnt_epi64(differences_end);
+    __m512i const population = _mm512_add_epi64(population_start, population_end);
+    return (double)_mm512_reduce_add_epi64(population);
+}
+"""
+
 cppyy.cppdef(hamming_serial8bit)
 cppyy.cppdef(hamming_serial64bit)
-cppyy.cppdef(hamming_avx512vpopcnt)
+cppyy.cppdef(hamming_avx512vpopcnt_1024d)
+cppyy.cppdef(hamming_avx512vpopcnt_768d)
 
 
 # Let's test our kernels
@@ -113,22 +138,24 @@ def test_hamming_functions():
     # Test each function
     serial_u8_result = cppyy.gbl.hamming_serial8bit(a, b)
     serial_u64_result = cppyy.gbl.hamming_serial64bit(a, b)
-    avx512_result = cppyy.gbl.hamming_avx512vpopcnt(a, b)
+    avx512_result = cppyy.gbl.hamming_avx512vpopcnt_1024d(a, b)
 
     assert serial_u8_result == 0, "hamming_serial8bit failed on identical vectors"
     assert serial_u64_result == 0, "hamming_serial64bit failed on identical vectors"
-    assert avx512_result == 0, "hamming_avx512vpopcnt failed on identical vectors"
+    assert avx512_result == 0, "hamming_avx512vpopcnt_1024d failed on identical vectors"
 
     # Now test with vectors that should have a distance of 8
     serial_u8_result = cppyy.gbl.hamming_serial8bit(a, c)
     serial_u64_result = cppyy.gbl.hamming_serial64bit(a, c)
-    avx512_result = cppyy.gbl.hamming_avx512vpopcnt(a, c)
+    avx512_result = cppyy.gbl.hamming_avx512vpopcnt_1024d(a, c)
 
     assert serial_u8_result == 8, "hamming_serial8bit failed on vectors with distance 8"
     assert (
         serial_u64_result == 8
     ), "hamming_serial64bit failed on vectors with distance 8"
-    assert avx512_result == 8, "hamming_avx512vpopcnt failed on vectors with distance 8"
+    assert (
+        avx512_result == 8
+    ), "hamming_avx512vpopcnt_1024d failed on vectors with distance 8"
 
     print("All tests passed!")
 
@@ -140,7 +167,14 @@ kernels = [
     ("hamming_numba64bit", hamming_numba64bit.address),
     ("hamming_serial8bit", cppyy.ll.addressof(cppyy.gbl.hamming_serial8bit)),
     ("hamming_serial64bit", cppyy.ll.addressof(cppyy.gbl.hamming_serial64bit)),
-    ("hamming_avx512vpopcnt", cppyy.ll.addressof(cppyy.gbl.hamming_avx512vpopcnt)),
+    (
+        "hamming_avx512vpopcnt_1024d",
+        cppyy.ll.addressof(cppyy.gbl.hamming_avx512vpopcnt_1024d),
+    ),
+    (
+        "hamming_avx512vpopcnt_768d",
+        cppyy.ll.addressof(cppyy.gbl.hamming_avx512vpopcnt_768d),
+    ),
 ]
 
 vectors: np.ndarray = random_vectors(
