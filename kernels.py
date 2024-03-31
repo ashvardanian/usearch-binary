@@ -1,5 +1,17 @@
+import os
+import concurrent.futures
+from typing import Optional
+
+import pandas as pd
+import fire
+
+from usearch.io import (
+    load_matrix,
+    save_matrix,
+)
 from usearch.eval import (
     random_vectors,
+    self_recall,
     SearchStats,
 )
 from usearch.index import (
@@ -12,8 +24,8 @@ from usearch.index import (
     search,
 )
 
-import cppyy
-import cppyy.ll
+# import cppyy
+# import cppyy.ll
 import numpy as np
 from numba import cfunc, types, carray
 
@@ -122,11 +134,11 @@ static float hamming_avx512_768d(uint8_t const * first_vector, uint8_t const * s
 }
 """
 
-cppyy.cppdef(hamming_serial8bit)
-cppyy.cppdef(hamming_serial64bit)
-cppyy.cppdef(hamming_avx512_1024d)
-cppyy.cppdef(jaccard_avx512_1024d)
-cppyy.cppdef(hamming_avx512_768d)
+# cppyy.cppdef(hamming_serial8bit)
+# cppyy.cppdef(hamming_serial64bit)
+# cppyy.cppdef(hamming_avx512_1024d)
+# cppyy.cppdef(jaccard_avx512_1024d)
+# cppyy.cppdef(hamming_avx512_768d)
 
 
 # Let's test our kernels
@@ -227,7 +239,221 @@ def bench_kernels(vectors_count, k: int = 10, exact: bool = False):
         print("-" * 80)
 
 
+def read_embeddings(parquet_file_path: str, column: str = "emb"):
+    print(f"Reading {parquet_file_path}")
+    df = pd.read_parquet(parquet_file_path)
+    emb = np.vstack(df[column].values, dtype=np.float16).copy()
+    del df
+    return emb
+
+
+def fast_vstack(matrices: list):
+    total_rows = sum(matrix.shape[0] for matrix in matrices)
+    num_columns = matrices[0].shape[1]
+    result = np.zeros((total_rows, num_columns), dtype=np.float16)
+
+    # Copy each matrix into the result array
+    current_row = 0
+    for matrix in matrices:
+        nrows = matrix.shape[0]
+        np.copyto(result[current_row : current_row + nrows, :], matrix)
+        current_row += nrows
+    return result
+
+
+def read_vectors(dir: str, column: str, limit: Optional[int] = None):
+    if limit is not None:
+        limit = int(limit)
+        print(f"Limiting to {limit:,} vectors")
+
+    # Go through the `dir` directory, reading `.parquet` files one after another.
+    # From every file extract the `column` column and stack them vertically into a matrix,
+    # until we reach `limit` rows.
+    files = os.listdir(dir)
+    files = [f for f in files if f.endswith(".parquet")]
+    files.sort()
+
+    # Assuming pre-processing can be quite expensive, let's start parallel processes
+    # that would export all parquet files into hbin files.
+    vectors = []
+    if limit:
+        count = 0
+        for file in files:
+            if limit is not None and count >= limit:
+                break
+            file_matrix = read_embeddings(os.path.join(dir, file), column)
+            vectors.append(file_matrix)
+            count += file_matrix.shape[0]
+
+    else:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=20) as executor:
+            futures = []
+            for file in files:
+                futures.append(
+                    executor.submit(read_embeddings, os.path.join(dir, file), column)
+                )
+
+            for future in concurrent.futures.as_completed(futures):
+                file_matrix = future.result()
+                vectors.append(file_matrix)
+
+    # Let's stack now
+    vectors = fast_vstack(vectors)
+    if limit is not None:
+        vectors = vectors[:limit]
+
+    return vectors
+
+
+def bench(
+    dir: str = None,
+    column: str = "emb",
+    limit: Optional[int] = None,
+    k: int = 10,
+    exact: bool = False,
+):
+
+    # If no real data is provided, let's profile on synthetic data
+    if dir is None:
+        test_hamming_functions()
+        bench_kernels(10_000, k=k, exact=True)
+        bench_kernels(1_000_000, k=k, exact=False)
+        return
+
+    # Check if a non-empty cached matrix file exists
+    vectors_filename_hbin = f"vectors-{limit}.hbin" if limit else "vectors.hbin"
+    vectors = (
+        read_vectors(dir, column, limit)
+        if not os.path.exists(vectors_filename_hbin)
+        or os.path.getsize(vectors_filename_hbin) == 0
+        else load_matrix(vectors_filename_hbin)
+    )
+    print("Read vectors!")
+    limit = vectors.shape[0]
+    keys = np.arange(limit, dtype=np.uint64)
+    print("Generated keys!")
+
+    # Let's save the matrix locally
+    save_matrix(vectors, vectors_filename_hbin)
+    print("Saved vectors!")
+
+    # Quantize into bits
+    # vectors = vectors.astype(np.float16)  # don't need full resolution
+    bit_vectors = np.packbits((vectors >= 0).astype(np.uint8), axis=1)
+    print("Packed bit-vectors!")
+
+    # The `self_recall` function contains a lot of serial code, that will take forever
+    # for the entire collection. Let's limit the number of queries to 10M.
+    limit_queries = 10_000_000
+    keys_queries = (
+        keys
+        if len(keys) < limit_queries
+        else np.random.choice(keys, limit_queries, replace=False)
+    )
+    print("Sampled queries!")
+
+    # Now let's build a half-precision index and search for the top-10 nearest neighbors,
+    # defining the baseline for the subsequent quantized experiments.
+    print("-" * 80)
+    print(f"Building `f16` index for {limit:,} vectors with Cosine metric")
+    index = Index(ndim=1024, dtype="f16", metric="cos")
+    index.add(keys, vectors, log=True)
+    stats: SearchStats = self_recall(
+        index,
+        keys=keys_queries,
+        vectors=vectors[keys_queries],
+        count=k,
+        exact=exact,
+        log=True,
+    )
+    print()
+    print("- Mean recall: ", stats.mean_recall)
+    print("- Mean efficiency: ", stats.mean_efficiency)
+    print(index.__repr_pretty__())
+    print("-" * 80)
+
+    # Now let's quantize into bits and search for the top-10 nearest neighbors.
+    print("-" * 80)
+    print(f"Building `b1` index for {limit:,} vectors with Hamming metric")
+    index = Index(ndim=1024, dtype="b1", metric="hamming")
+    index.add(keys, bit_vectors, log=True)
+    stats: SearchStats = self_recall(
+        index,
+        keys=keys_queries,
+        vectors=bit_vectors[keys_queries],
+        count=k,
+        exact=exact,
+        log=True,
+    )
+    print()
+    print("- Mean recall: ", stats.mean_recall)
+    print("- Mean efficiency: ", stats.mean_efficiency)
+    print(index.__repr_pretty__())
+    print("-" * 80)
+
+    # Let's check if Jaccard distance works better
+    print("-" * 80)
+    print(f"Building `b1` index for {limit:,} vectors with Jaccard metric")
+    index = Index(ndim=1024, dtype="b1", metric="tanimoto")
+    index.add(keys, bit_vectors, log=True)
+    stats: SearchStats = self_recall(
+        index,
+        keys=keys_queries,
+        vectors=bit_vectors[keys_queries],
+        count=k,
+        exact=exact,
+        log=True,
+    )
+    print()
+    print("- Mean recall: ", stats.mean_recall)
+    print("- Mean efficiency: ", stats.mean_efficiency)
+    print(index.__repr_pretty__())
+    print("-" * 80)
+
+    # Let's compare our kernels to naive slicing
+    for ndim_slices in [16, 32, 64, 128, 256, 512]:
+        print("-" * 80)
+        print(
+            f"Building `f16` index for {limit:,}x {ndim_slices}d vectors with Cosine metric"
+        )
+        index = Index(ndim=ndim_slices, dtype="f16", metric="cos")
+        index.add(keys, vectors[:, :ndim_slices], log=True)
+        stats: SearchStats = self_recall(
+            index,
+            keys=keys_queries,
+            vectors=vectors[keys_queries, :ndim_slices],
+            count=k,
+            exact=exact,
+            log=True,
+        )
+        print()
+        print("- Mean recall: ", stats.mean_recall)
+        print("- Mean efficiency: ", stats.mean_efficiency)
+        print(index.__repr_pretty__())
+        print("-" * 80)
+
+    # Let's combine quantization with slicing
+    for ndim_slices in [64, 128, 256, 512]:
+        print("-" * 80)
+        print(
+            f"Building `b1` index for {limit:,}x {ndim_slices}d vectors with Hamming metric"
+        )
+        index = Index(ndim=ndim_slices, dtype="b1", metric="hamming")
+        index.add(keys, bit_vectors[:, : ndim_slices // 8], log=True)  # 8 bits per byte
+        stats: SearchStats = self_recall(
+            index,
+            keys=keys_queries,
+            vectors=bit_vectors[keys_queries, : ndim_slices // 8],
+            count=k,
+            exact=exact,
+            log=True,
+        )
+        print()
+        print("- Mean recall: ", stats.mean_recall)
+        print("- Mean efficiency: ", stats.mean_efficiency)
+        print(index.__repr_pretty__())
+        print("-" * 80)
+
+
 if __name__ == "__main__":
-    test_hamming_functions()
-    bench_kernels(10_000, exact=True)
-    bench_kernels(1_000_000, exact=False)
+    fire.Fire(bench)

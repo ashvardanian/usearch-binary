@@ -8,3 +8,6 @@ faiss-cpu
 # Micro-kernels:
 cppyy
 numba
+
+# Running the CLI
+fire

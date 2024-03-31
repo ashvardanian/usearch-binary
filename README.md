@@ -48,3 +48,9 @@ To run the kernel benchmarks, use the following command:
 ```sh
 $ python kernel.py
 ```
+
+To run benchmarks over real data:
+
+```sh
+$ python kernels.py --dir cohere --limit 1e6
+```
