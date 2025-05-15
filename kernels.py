@@ -1,3 +1,15 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# dependencies = [
+#   "usearch",
+#   "numpy",
+#   "pandas",
+#   "numba",
+#   "cppyy",
+#   "fire",
+# ]
+# ///
+
 import os
 import concurrent.futures
 from typing import Optional
@@ -24,8 +36,8 @@ from usearch.index import (
     search,
 )
 
-# import cppyy
-# import cppyy.ll
+import cppyy
+import cppyy.ll
 import numpy as np
 from numba import cfunc, types, carray
 
@@ -65,7 +77,7 @@ static float hamming_serial8bit(uint8_t const * a, uint8_t const * b) {
 #pragma unroll
     for (size_t i = 0; i != 128; ++i)
         result += __builtin_popcount(a[i] ^ b[i]);
-    return (double)result;
+    return (float)result;
 }
 """
 
@@ -77,7 +89,7 @@ static float hamming_serial64bit(uint8_t const * a, uint8_t const * b) {
 #pragma unroll
     for (size_t i = 0; i != 16; ++i)
         result += __builtin_popcountll(a64[i] ^ b64[i]);
-    return (double)result;
+    return (float)result;
 }
 """
 
@@ -94,7 +106,7 @@ static float hamming_avx512_1024d(uint8_t const * first_vector, uint8_t const * 
     __m512i const population_start = _mm512_popcnt_epi64(differences_start);
     __m512i const population_end = _mm512_popcnt_epi64(differences_end);
     __m512i const population = _mm512_add_epi64(population_start, population_end);
-    return (double)_mm512_reduce_add_epi64(population);
+    return (float)_mm512_reduce_add_epi64(population);
 }
 """
 
@@ -112,7 +124,7 @@ static float jaccard_avx512_1024d(uint8_t const * first_vector, uint8_t const * 
     __m512i const union_end = _mm512_popcnt_epi64(_mm512_or_epi64(first_end, second_end));
     __m512i const intersection = _mm512_add_epi64(intersection_start, intersection_end);
     __m512i const union_ = _mm512_add_epi64(union_start, union_end);
-    return 1 - (double)_mm512_reduce_add_epi64(intersection) / _mm512_reduce_add_epi64(union_);
+    return 1 - (float)_mm512_reduce_add_epi64(intersection) / _mm512_reduce_add_epi64(union_);
 }
 """
 
@@ -130,15 +142,15 @@ static float hamming_avx512_768d(uint8_t const * first_vector, uint8_t const * s
     __m512i const population_start = _mm512_popcnt_epi64(differences_start);
     __m512i const population_end = _mm512_popcnt_epi64(differences_end);
     __m512i const population = _mm512_add_epi64(population_start, population_end);
-    return (double)_mm512_reduce_add_epi64(population);
+    return (float)_mm512_reduce_add_epi64(population);
 }
 """
 
-# cppyy.cppdef(hamming_serial8bit)
-# cppyy.cppdef(hamming_serial64bit)
-# cppyy.cppdef(hamming_avx512_1024d)
-# cppyy.cppdef(jaccard_avx512_1024d)
-# cppyy.cppdef(hamming_avx512_768d)
+cppyy.cppdef(hamming_serial8bit)
+cppyy.cppdef(hamming_serial64bit)
+cppyy.cppdef(hamming_avx512_1024d)
+cppyy.cppdef(jaccard_avx512_1024d)
+cppyy.cppdef(hamming_avx512_768d)
 
 
 # Let's test our kernels
@@ -211,13 +223,13 @@ def bench_kernel(
 
 def bench_kernels(vectors_count, k: int = 10, exact: bool = False):
     kernels = [
-        # ("hamming_numba8bit", hamming_numba8bit.address),
-        # ("hamming_numba64bit", hamming_numba64bit.address),
-        # ("hamming_serial8bit", cppyy.ll.addressof(cppyy.gbl.hamming_serial8bit)),
-        # ("hamming_serial64bit", cppyy.ll.addressof(cppyy.gbl.hamming_serial64bit)),
+        ("hamming_numba8bit", hamming_numba8bit.address),
+        ("hamming_numba64bit", hamming_numba64bit.address),
+        ("hamming_serial8bit", cppyy.ll.addressof(cppyy.gbl.hamming_serial8bit)),
+        ("hamming_serial64bit", cppyy.ll.addressof(cppyy.gbl.hamming_serial64bit)),
         ("hamming_avx512_1024d", cppyy.ll.addressof(cppyy.gbl.hamming_avx512_1024d)),
         ("jaccard_avx512_1024d", cppyy.ll.addressof(cppyy.gbl.jaccard_avx512_1024d)),
-        # ("hamming_avx512_768d", cppyy.ll.addressof(cppyy.gbl.hamming_avx512_768d)),
+        ("hamming_avx512_768d", cppyy.ll.addressof(cppyy.gbl.hamming_avx512_768d)),
     ]
 
     vectors: np.ndarray = random_vectors(
