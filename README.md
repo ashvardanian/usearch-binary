@@ -1,4 +1,4 @@
-# Optimizing Binary Vector Search with USearch
+# Exploring Bit-Level Vector Search
 
 The ultimate compressed vector representation is a vector of individual bits, as opposed to more common 32-bit `f32` floats and 8-bit `i8` integers.
 That representation is natively supported by [USearch](https://github.com/unum-cloud/usearch), but given the tiny size of the vectors, more optimizations can be explored to scale to larger datasets.
@@ -114,11 +114,11 @@ That's 6x `std::popcount` and we can easily reduce it to 4x, by using the follow
 
 $$
 \begin{aligned}
-X &:= \{x_0,\,x_1,\,x_2\} \\
-\operatorname{PopCount}(X) &:= \sum_{i=0}^{2}\operatorname{PopCount}(x_i) \\
-\text{Odd} &:= (x_0 \oplus x_1)\,\oplus\, x_2 \\
-\text{Major} &:= \bigl((x_0 \oplus x_1)\land x_2\bigr)\,\lor\, (x_0 \land x_1) \\
-\curvearrowright \operatorname{PopCount}(X) &:= 2\,\operatorname{PopCount}(\text{Major}) + \operatorname{PopCount}(\text{Odd})
+X &:= \{x_0,x_1,x_2\} \\
+\text{PopCount}(X) &:= \sum_{i=0}^{2}\text{PopCount}(x_i) \\
+\text{Odd} &:= (x_0 \oplus x_1) \oplus\ x_2 \\
+\text{Major} &:= \bigl((x_0 \oplus x_1)\land x_2\bigr) \lor\ (x_0 \land x_1) \\
+\curvearrowright \text{PopCount}(X) &= 2 \text{PopCount}(\text{Major}) + \text{PopCount}(\text{Odd})
 \end{aligned}
 $$
 
