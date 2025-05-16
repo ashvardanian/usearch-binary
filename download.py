@@ -8,6 +8,14 @@
 # ]
 # ///
 
+# ? This script downloads and processes precompute vector embeddings
+# ? of WikiPedia from Hugging Face. To use it:
+# ? ```bash
+# ? python download.py --dataset cohere-en
+# ? ```
+# ? Consider checking the `harley-seal.py` script afterwards with tests
+# ? for advanced population-counting schemes and other optimizations.
+
 import math
 import os
 import subprocess

@@ -1,12 +1,20 @@
 {
     "cSpell.words": [
         "binarize",
+        "cppdef",
         "cppyy",
+        "cstdint",
         "Jaccard",
+        "loadu",
         "mixedbread",
+        "ndarray",
+        "ndims",
         "packbits",
+        "popcnt",
         "popcount",
         "tanimoto",
-        "usearch"
+        "usearch",
+        "vpopcntq",
+        "vpshufb"
     ]
 }

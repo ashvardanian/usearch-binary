@@ -1,30 +1,62 @@
-# Exploring Bit-Level Vector Search
+# Jaccard Index Optimization
 
-The ultimate compressed vector representation is a vector of individual bits, as opposed to more common 32-bit `f32` floats and 8-bit `i8` integers.
-That representation is natively supported by [USearch](https://github.com/unum-cloud/usearch), but given the tiny size of the vectors, more optimizations can be explored to scale to larger datasets.
+Jaccard Index is one of the most common tools in Information Retrieval and is used to measure the similarity between two sets, mostly defined at a single bit level:
+
+$$
+\text{Jaccard}(A, B) = \frac{|A \cap B|}{|A \cup B|} = \frac{|A \cap B|}{|A| + |B| - |A \cap B|}
+$$
+
+In code, one would rarely deal with `boolean` values due to obvious space-inefficiency, and would generally operate on octets of bits, packed into 8-bit unsigned integers, like this:
+
+```cpp
+#include <bits> // brings `std::popcount`
+#include <cstdint> // brings `std::size_t`
+
+float jaccard(std::uint8_t const* first_vector, std::uint8_t const* second_vector, std::size_t count_octets) {
+    std::size_t intersection = 0, union_ = 0;
+    for (std::size_t i = 0; i < count_octets; ++i) {
+        std::uint8_t first_octet = first_vector[i], second_octet = second_vector[i];
+        intersection += std::popcount(first_octet & second_octet);
+        union_ += std::popcount(rst_octet | second_octet);
+    }
+    return (float)intersection / (float)union_;
+}
+```
+
+That's, however, horribly inefficient!
+Assuming how often bit-level representation are now used in large-scale vector search deployments with [USearch](https://github.com/unum-cloud/usearch), this repository provides benchmarks and custom kernels exploring the performance impacts of following optimizations:
+
+- Using lookup tables to speed up population counts.
+- Using [Harley-Seal](https://en.wikipedia.org/wiki/Harley%E2%80%93Seal_adder) and Odd-Majority [CSAs](https://en.wikipedia.org/wiki/Carry-save_adder) for population counts.
+- Loop unrolling and inlining.
+
+---
+
+Native optimizations are implemented [NumBa](https://numba.pydata.org/) and [Cppyy](https://cppyy.readthedocs.io/) JIT compiler for Python and C++, and are packed into [UV](https://docs.astral.sh/uv/)-compatible scripts.
+For benchmarks, a combination of random and real data is used.
 Luckily, modern embedding models are often trained in Quantization-aware manner, and precomputed WikiPedia embeddings are available on the HuggingFace portal:
 
 - [Co:here](https://huggingface.co/datasets/Cohere/wikipedia-2023-11-embed-multilingual-v3)
 - [MixedBread.ai](https://huggingface.co/datasets/mixedbread-ai/wikipedia-embed-en-2023-11)
 
-Native optimizations are implemented [NumBa](https://numba.pydata.org/) and [Cppyy](https://cppyy.readthedocs.io/) JIT compiler for Python and C++, and are packed into [UV](https://docs.astral.sh/uv/)-compatible scripts.
+Most of those vectors are 1024- to 1536-dimensional, with datasets containing between 10M and 300M vectors for multilingual.
 
 ## Running Examples
 
-To view the results, check out the [`bench.ipynb`](bench.ipynb).
-To replicate the results, first, download the data:
+To benchmark and test the kernels on your hardware, run the following command:
 
 ```sh
-$ pip install -r requirements.txt
-$ python download.py
-$ ls -alh mixedbread | head -n 1
-> total 15G
-$ ls -alh cohere | head -n 1
-> total 15G
+$ uv run --script kernels.py --count 10000 --ndims "1024,1536"
+$ uv run --script kernels.py --help # for more options
 ```
 
-In both cases, the embeddings have 1024 dimensions, each represented with a single bit, packed into 128-byte vectors.
-32 GBs of RAM are recommended to run the scripts.
+To download and quantize some baseline data.
+The following script will pull the English WikiPedia embeddings, save them to `cohere/en*`, and quantize them to 1-bit vectors:
+
+```sh
+$ uv run --script download.py --dataset cohere-en --quantize
+$ uv run --script download.py --help # for more options
+```
 
 ## Optimizations
 
@@ -34,15 +66,15 @@ We don't need any `for`-loops, the entire operation can be unrolled and inlined.
 
 ```c
 uint64_t hamming_distance_1024d(uint8_t const* first_vector, uint8_t const* second_vector) {
-    __m512i const first_start = _mm512_loadu_si512((__m512i const*)(first_vector));
-    __m512i const first_end = _mm512_loadu_si512((__m512i const*)(first_vector + 64));
-    __m512i const second_start = _mm512_loadu_si512((__m512i const*)(second_vector));
-    __m512i const second_end = _mm512_loadu_si512((__m512i const*)(second_vector + 64));
-    __m512i const differences_start = _mm512_xor_epi64(first_start, second_start);
-    __m512i const differences_end = _mm512_xor_epi64(first_end, second_end);
-    __m512i const population_start = _mm512_popcnt_epi64(differences_start);
-    __m512i const population_end = _mm512_popcnt_epi64(differences_end);
-    __m512i const population = _mm512_add_epi64(population_start, population_end);
+    __m512i first_start = _mm512_loadu_si512((__m512i const*)(first_vector));
+    __m512i first_end = _mm512_loadu_si512((__m512i const*)(first_vector + 64));
+    __m512i second_start = _mm512_loadu_si512((__m512i const*)(second_vector));
+    __m512i second_end = _mm512_loadu_si512((__m512i const*)(second_vector + 64));
+    __m512i differences_start = _mm512_xor_epi64(first_start, second_start);
+    __m512i differences_end = _mm512_xor_epi64(first_end, second_end);
+    __m512i population_start = _mm512_popcnt_epi64(differences_start);
+    __m512i population_end = _mm512_popcnt_epi64(differences_end);
+    __m512i population = _mm512_add_epi64(population_start, population_end);
     return _mm512_reduce_add_epi64(population);
 }
 ```
@@ -67,27 +99,32 @@ So when implementing the Jaccard distance, the most important kernel for binary 
 
 ```c
 float jaccard_distance_1024d(uint8_t const* first_vector, uint8_t const* second_vector) {
-    __m512i const first_start = _mm512_loadu_si512((__m512i const*)(first_vector));
-    __m512i const first_end = _mm512_loadu_si512((__m512i const*)(first_vector + 64));
-    __m512i const second_start = _mm512_loadu_si512((__m512i const*)(second_vector));
-    __m512i const second_end = _mm512_loadu_si512((__m512i const*)(second_vector + 64));
-    __m512i const intersection_start = _mm512_and_epi64(first_start, second_start);
-    __m512i const intersection_end = _mm512_and_epi64(first_end, second_end);
-    __m512i const union_start = _mm512_or_epi64(first_start, second_start);
-    __m512i const union_end = _mm512_or_epi64(first_end, second_end);
-    __m512i const population_intersection_start = _mm512_popcnt_epi64(intersection_start);
-    __m512i const population_intersection_end = _mm512_popcnt_epi64(intersection_end);
-    __m512i const population_union_start = _mm512_popcnt_epi64(union_start);
-    __m512i const population_union_end = _mm512_popcnt_epi64(union_end);
-    __m512i const population_intersection = _mm512_add_epi64(population_intersection_start, population_intersection_end);
-    __m512i const population_union = _mm512_add_epi64(population_union_start, population_union_end);
+    __m512i first_start = _mm512_loadu_si512((__m512i const*)(first_vector));
+    __m512i first_end = _mm512_loadu_si512((__m512i const*)(first_vector + 64));
+    __m512i second_start = _mm512_loadu_si512((__m512i const*)(second_vector));
+    __m512i second_end = _mm512_loadu_si512((__m512i const*)(second_vector + 64));
+    __m512i intersection_start = _mm512_and_epi64(first_start, second_start);
+    __m512i intersection_end = _mm512_and_epi64(first_end, second_end);
+    __m512i union_start = _mm512_or_epi64(first_start, second_start);
+    __m512i union_end = _mm512_or_epi64(first_end, second_end);
+    __m512i population_intersection_start = _mm512_popcnt_epi64(intersection_start);
+    __m512i population_intersection_end = _mm512_popcnt_epi64(intersection_end);
+    __m512i population_union_start = _mm512_popcnt_epi64(union_start);
+    __m512i population_union_end = _mm512_popcnt_epi64(union_end);
+    __m512i population_intersection = _mm512_add_epi64(population_intersection_start, population_intersection_end);
+    __m512i population_union = _mm512_add_epi64(population_union_start, population_union_end);
     return 1.f - _mm512_reduce_add_epi64(population_intersection) * 1.f / _mm512_reduce_add_epi64(population_union);
 }
 ```
 
 That's known to be a bottleneck and can be improved.
 
-### Harley-Seal and Odd-Majority Algorithms
+### Lookup Tables
+
+A common trick is to implement population counts using lookup tables.
+The idea may seem costly compared to `_mm512_popcnt_epi64`, but depends on the number of counts that need to be performed.
+
+### Harley-Seal and Odd-Majority [CSA](https://en.wikipedia.org/wiki/Carry-save_adder)
 
 Let's take a look at a few 192-dimensional bit-vectors for simplicity.
 Each will be represented with 3x 64-bit unsigned integers.
@@ -130,17 +167,3 @@ So $N$ "Odd-Major" population counts can cover the logic needed for the $2^N-1$ 
 - 31x `std::popcount` can be reduced to 5x.
 
 When dealing with 1024-dimensional bit-vectors on 64-bit machines, we can view them as 16x 64-bit words, leveraging the "Odd-Majority" trick to fold first 15x `std::popcount` into 4x, and then having 1x more call for the tail, thus shrinking from 16x to 5x calls, at the cost of several `XOR` and `AND` operations.
-
-### Testing and Profiling Kernels
-
-To run the kernel benchmarks, use the following command:
-
-```sh
-$ python kernel.py
-```
-
-To run benchmarks over real data:
-
-```sh
-$ python kernels.py --dir cohere --limit 1e6
-```
