@@ -83,8 +83,8 @@ def jaccard_u64x16_numba(a, b):
     return 1.0 - (intersection + 1.0) / (union + 1.0)  # ! Avoid division by zero
 
 
-jaccard_u8x128_cpp = """
-static float jaccard_u8x128_cpp(uint8_t const * a, uint8_t const * b) {
+jaccard_u8x128_c = """
+static float jaccard_u8x128_c(uint8_t const * a, uint8_t const * b) {
     uint32_t intersection = 0, union_ = 0;
 #pragma unroll
     for (size_t i = 0; i != 128; ++i)
@@ -94,8 +94,8 @@ static float jaccard_u8x128_cpp(uint8_t const * a, uint8_t const * b) {
 }
 """
 
-jaccard_u64x16_cpp = """
-static float jaccard_u64x16_cpp(uint8_t const * a, uint8_t const * b) {
+jaccard_u64x16_c = """
+static float jaccard_u64x16_c(uint8_t const * a, uint8_t const * b) {
     uint32_t intersection = 0, union_ = 0;
     uint64_t const *a64 = (uint64_t const *)a;
     uint64_t const *b64 = (uint64_t const *)b;
@@ -247,14 +247,14 @@ static float jaccard_b1024_vpshufb_dpb(uint8_t const * first_vector, uint8_t con
 # Harley-Seal transformation and Odd-Major-style Carry-Save-Adders can be used to replace
 # several population counts with a few bitwise operations and one `popcount`, which can help
 # lift the pressure on the CPU ports.
-jaccard_u64x16_csa3_cpp = """
+jaccard_u64x16_csa3_c = """
 inline int popcount_csa3(uint64_t x, uint64_t y, uint64_t z) {
     uint64_t odd  = (x ^ y) ^ z;
-    uint64_t major = ((x ^ y ) & z) | (x & y);
+    uint64_t major = ((x ^ y) & z) | (x & y);
     return 2 * __builtin_popcountll(major) + __builtin_popcountll(odd);
 }
 
-static float jaccard_u64x16_csa3_cpp(uint8_t const * a, uint8_t const * b) {
+static float jaccard_u64x16_csa3_c(uint8_t const * a, uint8_t const * b) {
     uint64_t const *a64 = (uint64_t const *)a;
     uint64_t const *b64 = (uint64_t const *)b;
     
@@ -279,12 +279,82 @@ static float jaccard_u64x16_csa3_cpp(uint8_t const * a, uint8_t const * b) {
 }
 """
 
-cppyy.cppdef(jaccard_u8x128_cpp)
-cppyy.cppdef(jaccard_u64x16_cpp)
+# That CSA can be scaled further to fold 15 population counts into 4.
+# It's a bit more complex and for readability we will use C++ tuple unpacking:
+jaccard_u64x16_csa15_cpp = """
+struct uint64_csa_t {
+   uint64_t ones;
+   uint64_t twos;
+};
+
+constexpr uint64_csa_t csa(uint64_t x, uint64_t y, uint64_t z) {
+    uint64_t odd  = (x ^ y) ^ z;
+    uint64_t major = ((x ^ y) & z) | (x & y);
+    return {odd, major};
+}
+
+constexpr int popcount_csa15(
+    uint64_t x1, uint64_t x2, uint64_t x3,
+    uint64_t x4, uint64_t x5, uint64_t x6, uint64_t x7,
+    uint64_t x8, uint64_t x9, uint64_t x10, uint64_t x11,
+    uint64_t x12, uint64_t x13, uint64_t x14, uint64_t x15) {
+        
+    auto [one1, two1] = csa(x1,  x2,  x3);
+    auto [one2, two2] = csa(x4,  x5,  x6);
+    auto [one3, two3] = csa(x7,  x8,  x9);
+    auto [one4, two4] = csa(x10, x11, x12);
+    auto [one5, two5] = csa(x13, x14, x15);
+
+    // Level‐2: fold the five “one” terms down to two + a final “ones”
+    auto [one6, two6] = csa(one1, one2, one3);
+    auto [ones, two7] = csa(one4, one5, one6);
+
+    // Level‐2: fold the five “two” terms down to two + a “twos”
+    auto [two8, four1] = csa(two1, two2, two3);
+    auto [two9, four2] = csa(two4, two5, two6);
+    auto [twos, four3] = csa(two7, two8, two9);
+
+    // Level‐3: fold the three “four” terms down to one “four” + one “eight”
+    auto [four, eight] = csa(four1, four2, four3);
+
+    // Now you have a full 4-bit per-bit‐position counter in (ones, twos, four, eight).
+    int count_ones  = __builtin_popcountll(ones);
+    int count_twos  = __builtin_popcountll(twos);
+    int count_four  = __builtin_popcountll(four);
+    int count_eight = __builtin_popcountll(eight);
+    return count_ones + 2 * count_twos + 4 * count_four + 8 * count_eight;
+}
+
+static float jaccard_u64x16_csa15_cpp(uint8_t const * a, uint8_t const * b) {
+    uint64_t const *a64 = (uint64_t const *)a;
+    uint64_t const *b64 = (uint64_t const *)b;
+    
+    int intersection = popcount_csa15(
+        a64[0] & b64[0], a64[1] & b64[1], a64[2] & b64[2], a64[3] & b64[3],
+        a64[4] & b64[4], a64[5] & b64[5], a64[6] & b64[6], a64[7] & b64[7],
+        a64[8] & b64[8], a64[9] & b64[9], a64[10] & b64[10], a64[11] & b64[11],
+        a64[12] & b64[12], a64[13] & b64[13], a64[14] & b64[14]) +
+        __builtin_popcountll(a64[15] & b64[15]);
+    
+        
+    int union_ = popcount_csa15(
+        a64[0] | b64[0], a64[1] | b64[1], a64[2] | b64[2], a64[3] | b64[3],
+        a64[4] | b64[4], a64[5] | b64[5], a64[6] | b64[6], a64[7] | b64[7],
+        a64[8] | b64[8], a64[9] | b64[9], a64[10] | b64[10], a64[11] | b64[11],
+        a64[12] | b64[12], a64[13] | b64[13], a64[14] | b64[14]) +
+        __builtin_popcountll(a64[15] | b64[15]);
+    
+    return 1.f - (intersection + 1.f) / (union_ + 1.f); // ! Avoid division by zero
+}
+"""
+
+cppyy.cppdef(jaccard_u8x128_c)
+cppyy.cppdef(jaccard_u64x16_c)
 cppyy.cppdef(jaccard_b1024_vpopcntq)
 cppyy.cppdef(jaccard_b1024_vpshufb_sad)
 cppyy.cppdef(jaccard_b1024_vpshufb_dpb)
-cppyy.cppdef(jaccard_u64x16_csa3_cpp)
+cppyy.cppdef(jaccard_u64x16_csa3_c)
+cppyy.cppdef(jaccard_u64x16_csa15_cpp)
 
 
 def generate_random_vectors(count: int, bits_per_vector: int) -> np.ndarray:
@@ -356,19 +426,24 @@ def main(
     kernels_cpp_1024d = [
         # C++:
         (
-            "jaccard_u64x16_cpp",
-            cppyy.gbl.jaccard_u64x16_cpp,
-            cppyy.ll.addressof(cppyy.gbl.jaccard_u64x16_cpp),
+            "jaccard_u64x16_c",
+            cppyy.gbl.jaccard_u64x16_c,
+            cppyy.ll.addressof(cppyy.gbl.jaccard_u64x16_c),
         ),
         (
-            "jaccard_u8x128_cpp",
-            cppyy.gbl.jaccard_u8x128_cpp,
-            cppyy.ll.addressof(cppyy.gbl.jaccard_u8x128_cpp),
+            "jaccard_u8x128_c",
+            cppyy.gbl.jaccard_u8x128_c,
+            cppyy.ll.addressof(cppyy.gbl.jaccard_u8x128_c),
         ),
         (
-            "jaccard_u64x16_csa3_cpp",
-            cppyy.gbl.jaccard_u64x16_csa3_cpp,
-            cppyy.ll.addressof(cppyy.gbl.jaccard_u64x16_csa3_cpp),
+            "jaccard_u64x16_csa3_c",
+            cppyy.gbl.jaccard_u64x16_csa3_c,
+            cppyy.ll.addressof(cppyy.gbl.jaccard_u64x16_csa3_c),
+        ),
+        (
+            "jaccard_u64x16_csa15_cpp",
+            cppyy.gbl.jaccard_u64x16_csa15_cpp,
+            cppyy.ll.addressof(cppyy.gbl.jaccard_u64x16_csa15_cpp),
         ),
         # SIMD:
         (
