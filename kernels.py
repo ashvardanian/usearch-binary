@@ -5,6 +5,7 @@
 #   "numba",
 #   "cppyy",
 #   "usearch",
+#   "faiss-cpu",
 #   "pytest",
 #   "pytest-benchmark",
 # ]
@@ -28,7 +29,11 @@ import cppyy
 import cppyy.ll
 import numpy as np
 from numba import cfunc, types, carray
-from numpy.ctypeslib import ndpointer
+from faiss import (
+    METRIC_Jaccard as FAISS_METRIC_JACCARD,
+    omp_set_num_threads as faiss_set_threads,
+)
+from faiss.contrib.exhaustive_search import knn as faiss_knn
 from usearch.index import (
     Index,
     CompiledMetric,
@@ -363,6 +368,30 @@ def generate_random_vectors(count: int, bits_per_vector: int) -> np.ndarray:
     return bits
 
 
+def bench_faiss(
+    vectors: np.ndarray,
+    k: int,
+    threads: int,
+) -> dict:
+
+    faiss_set_threads(threads)
+    n = vectors.shape[0]
+    start = time.perf_counter()
+    _, matches = faiss_knn(vectors, vectors, k, metric=FAISS_METRIC_JACCARD)
+    elapsed = time.perf_counter() - start
+
+    computed = n * n
+    recalled_top_match = int((matches[:, 0] == np.arange(n)).sum())
+    bop_per_dist = vectors.shape[1] * (8 if vectors.dtype == np.uint8 else 1) * 2
+    return {
+        "elapsed_s": elapsed,
+        "computed_distances": computed,
+        "visited_members": computed,
+        "bit_ops_per_s": computed * bop_per_dist / elapsed,
+        "recalled_top_match": recalled_top_match,
+    }
+
+
 def bench_kernel(
     kernel_pointer: int,
     vectors: np.ndarray,
@@ -497,8 +526,20 @@ def main(
 
         # Run the benchmarks:
         print("-" * 80)
+
+        #
+        if True:
+            print(f"Profiling FAISS over {count:,} vectors")
+            stats = bench_faiss(
+                vectors=vectors,
+                k=k,
+                threads=threads,
+            )
+            print(f"- BOP/S: {stats['bit_ops_per_s'] / 1e9:,.2f} G")
+            print(f"- Recall@1: {stats['recalled_top_match'] / count:.2%}")
+
         for name, _, kernel_pointer in kernels_cpp_1024d + kernels_numba_1024d:
-            print(f"Profiling `{name}` over {count:,} vectors")
+            print(f"Profiling `{name}` in USearch over {count:,} vectors")
             stats = bench_kernel(
                 kernel_pointer=kernel_pointer,
                 vectors=vectors,
