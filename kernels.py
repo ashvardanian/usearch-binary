@@ -113,73 +113,73 @@ jaccard_b1024_vpopcntq = """
 #include <immintrin.h>
 __attribute__((target("avx512f,avx512vl,bmi2,avx512bw,avx512dq")))
 static float jaccard_b1024_vpopcntq(uint8_t const * first_vector, uint8_t const * second_vector) {
-    __m512i const first_start = _mm512_loadu_si512((__m512i const *)(first_vector));
-    __m512i const first_end = _mm512_loadu_si512((__m512i const *)(first_vector + 64));
-    __m512i const second_start = _mm512_loadu_si512((__m512i const *)(second_vector));
-    __m512i const second_end = _mm512_loadu_si512((__m512i const *)(second_vector + 64));
+    __m512i first_start = _mm512_loadu_si512((__m512i const*)(first_vector));
+    __m512i first_end = _mm512_loadu_si512((__m512i const*)(first_vector + 64));
+    __m512i second_start = _mm512_loadu_si512((__m512i const*)(second_vector));
+    __m512i second_end = _mm512_loadu_si512((__m512i const*)(second_vector + 64));
     
-    __m512i const intersection_start = _mm512_popcnt_epi64(_mm512_and_epi64(first_start, second_start));
-    __m512i const intersection_end = _mm512_popcnt_epi64(_mm512_and_epi64(first_end, second_end));
-    __m512i const union_start = _mm512_popcnt_epi64(_mm512_or_epi64(first_start, second_start));
-    __m512i const union_end = _mm512_popcnt_epi64(_mm512_or_epi64(first_end, second_end));
+    __m512i intersection_start = _mm512_popcnt_epi64(_mm512_and_epi64(first_start, second_start));
+    __m512i intersection_end = _mm512_popcnt_epi64(_mm512_and_epi64(first_end, second_end));
+    __m512i union_start = _mm512_popcnt_epi64(_mm512_or_epi64(first_start, second_start));
+    __m512i union_end = _mm512_popcnt_epi64(_mm512_or_epi64(first_end, second_end));
     
-    __m512i const intersection = _mm512_add_epi64(intersection_start, intersection_end);
-    __m512i const union_ = _mm512_add_epi64(union_start, union_end);
+    __m512i intersection = _mm512_add_epi64(intersection_start, intersection_end);
+    __m512i union_ = _mm512_add_epi64(union_start, union_end);
     return 1.f - (_mm512_reduce_add_epi64(intersection) + 1.f) / (_mm512_reduce_add_epi64(union_) + 1.f);
 }
 """
 
-# Define the AVX-512 variant using the `vpshufb` instruction.
+# Define the AVX-512 variant using the `vpshufb` and `vpsadbw` instruction.
 # It resorts to cheaper byte-shuffling instructions, than population counts.
 # Source: https://github.com/CountOnes/hamming_weight/blob/1dd7554c0fc39e01c9d7fa54372fd4eccf458875/src/sse_jaccard_index.c#L17
-jaccard_b1024_vpshufb = """
+jaccard_b1024_vpshufb_sad = """
 #include <immintrin.h>
 __attribute__((target("avx512f,avx512vl,bmi2,avx512bw,avx512dq")))
-static float jaccard_b1024_vpshufb(uint8_t const * first_vector, uint8_t const * second_vector) {
-    __m512i const first_start = _mm512_loadu_si512((__m512i const *)(first_vector));
-    __m512i const first_end = _mm512_loadu_si512((__m512i const *)(first_vector + 64));
-    __m512i const second_start = _mm512_loadu_si512((__m512i const *)(second_vector));
-    __m512i const second_end = _mm512_loadu_si512((__m512i const *)(second_vector + 64));
+static float jaccard_b1024_vpshufb_sad(uint8_t const * first_vector, uint8_t const * second_vector) {
+    __m512i first_start = _mm512_loadu_si512((__m512i const*)(first_vector));
+    __m512i first_end = _mm512_loadu_si512((__m512i const*)(first_vector + 64));
+    __m512i second_start = _mm512_loadu_si512((__m512i const*)(second_vector));
+    __m512i second_end = _mm512_loadu_si512((__m512i const*)(second_vector + 64));
     
-    __m512i const intersection_start = _mm512_and_epi64(first_start, second_start);
-    __m512i const intersection_end = _mm512_and_epi64(first_end, second_end);
-    __m512i const union_start = _mm512_or_epi64(first_start, second_start);
-    __m512i const union_end = _mm512_or_epi64(first_end, second_end);
+    __m512i intersection_start = _mm512_and_epi64(first_start, second_start);
+    __m512i intersection_end = _mm512_and_epi64(first_end, second_end);
+    __m512i union_start = _mm512_or_epi64(first_start, second_start);
+    __m512i union_end = _mm512_or_epi64(first_end, second_end);
 
-    __m512i const low_mask = _mm512_set1_epi8(0x0f);
-    __m512i const lookup = _mm512_set_epi8(
+    __m512i low_mask = _mm512_set1_epi8(0x0f);
+    __m512i lookup = _mm512_set_epi8(
         4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0,
         4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0,
         4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0,
         4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0);
     
-    __m512i const intersection_start_low = _mm512_and_si512(intersection_start, low_mask);
-    __m512i const intersection_start_high = _mm512_and_si512(_mm512_srli_epi64(intersection_start, 4), low_mask);
-    __m512i const intersection_end_low = _mm512_and_si512(intersection_end, low_mask);
-    __m512i const intersection_end_high = _mm512_and_si512(_mm512_srli_epi64(intersection_end, 4), low_mask);
+    __m512i intersection_start_low = _mm512_and_si512(intersection_start, low_mask);
+    __m512i intersection_start_high = _mm512_and_si512(_mm512_srli_epi16(intersection_start, 4), low_mask);
+    __m512i intersection_end_low = _mm512_and_si512(intersection_end, low_mask);
+    __m512i intersection_end_high = _mm512_and_si512(_mm512_srli_epi16(intersection_end, 4), low_mask);
 
-    __m512i const union_start_low = _mm512_and_si512(union_start, low_mask);
-    __m512i const union_start_high = _mm512_and_si512(_mm512_srli_epi64(union_start, 4), low_mask);
-    __m512i const union_end_low = _mm512_and_si512(union_end, low_mask);
-    __m512i const union_end_high = _mm512_and_si512(_mm512_srli_epi64(union_end, 4), low_mask);
+    __m512i union_start_low = _mm512_and_si512(union_start, low_mask);
+    __m512i union_start_high = _mm512_and_si512(_mm512_srli_epi16(union_start, 4), low_mask);
+    __m512i union_end_low = _mm512_and_si512(union_end, low_mask);
+    __m512i union_end_high = _mm512_and_si512(_mm512_srli_epi16(union_end, 4), low_mask);
 
-    __m512i const intersection_start_popcount = _mm512_add_epi8(
+    __m512i intersection_start_popcount = _mm512_add_epi8(
         _mm512_shuffle_epi8(lookup, intersection_start_low),
         _mm512_shuffle_epi8(lookup, intersection_start_high));
-    __m512i const intersection_end_popcount = _mm512_add_epi8(
+    __m512i intersection_end_popcount = _mm512_add_epi8(
         _mm512_shuffle_epi8(lookup, intersection_end_low),
         _mm512_shuffle_epi8(lookup, intersection_end_high));
-    __m512i const union_start_popcount = _mm512_add_epi8(
+    __m512i union_start_popcount = _mm512_add_epi8(
         _mm512_shuffle_epi8(lookup, union_start_low),
         _mm512_shuffle_epi8(lookup, union_start_high));
-    __m512i const union_end_popcount = _mm512_add_epi8(
+    __m512i union_end_popcount = _mm512_add_epi8(
         _mm512_shuffle_epi8(lookup, union_end_low),
         _mm512_shuffle_epi8(lookup, union_end_high));
     
-    __m512i const intersection = _mm512_add_epi64(
+    __m512i intersection = _mm512_add_epi64(
         _mm512_sad_epu8(intersection_start_popcount, _mm512_setzero_si512()), 
         _mm512_sad_epu8(intersection_end_popcount, _mm512_setzero_si512()));
-    __m512i const union_ = _mm512_add_epi64(
+    __m512i union_ = _mm512_add_epi64(
         _mm512_sad_epu8(union_start_popcount, _mm512_setzero_si512()), 
         _mm512_sad_epu8(union_end_popcount, _mm512_setzero_si512()));
         
@@ -187,10 +187,68 @@ static float jaccard_b1024_vpshufb(uint8_t const * first_vector, uint8_t const *
 }
 """
 
+# Define the AVX-512 variant using the `vpshufb` and `vpdpbusd` instruction.
+# It replaces the horizontal addition with a dot-product.
+jaccard_b1024_vpshufb_dpb = """
+#include <immintrin.h>
+__attribute__((target("avx512f,avx512vl,bmi2,avx512bw,avx512dq")))
+static float jaccard_b1024_vpshufb_dpb(uint8_t const * first_vector, uint8_t const * second_vector) {
+    __m512i first_start = _mm512_loadu_si512((__m512i const*)(first_vector));
+    __m512i first_end = _mm512_loadu_si512((__m512i const*)(first_vector + 64));
+    __m512i second_start = _mm512_loadu_si512((__m512i const*)(second_vector));
+    __m512i second_end = _mm512_loadu_si512((__m512i const*)(second_vector + 64));
+    
+    __m512i intersection_start = _mm512_and_epi64(first_start, second_start);
+    __m512i intersection_end = _mm512_and_epi64(first_end, second_end);
+    __m512i union_start = _mm512_or_epi64(first_start, second_start);
+    __m512i union_end = _mm512_or_epi64(first_end, second_end);
+
+    __m512i ones = _mm512_set1_epi8(1);
+    __m512i low_mask = _mm512_set1_epi8(0x0f);
+    __m512i lookup = _mm512_set_epi8(
+        4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0,
+        4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0,
+        4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0,
+        4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0);
+    
+    __m512i intersection_start_low = _mm512_and_si512(intersection_start, low_mask);
+    __m512i intersection_start_high = _mm512_and_si512(_mm512_srli_epi16(intersection_start, 4), low_mask);
+    __m512i intersection_end_low = _mm512_and_si512(intersection_end, low_mask);
+    __m512i intersection_end_high = _mm512_and_si512(_mm512_srli_epi16(intersection_end, 4), low_mask);
+
+    __m512i union_start_low = _mm512_and_si512(union_start, low_mask);
+    __m512i union_start_high = _mm512_and_si512(_mm512_srli_epi16(union_start, 4), low_mask);
+    __m512i union_end_low = _mm512_and_si512(union_end, low_mask);
+    __m512i union_end_high = _mm512_and_si512(_mm512_srli_epi16(union_end, 4), low_mask);
+
+    __m512i intersection_start_popcount = _mm512_add_epi8(
+        _mm512_shuffle_epi8(lookup, intersection_start_low),
+        _mm512_shuffle_epi8(lookup, intersection_start_high));
+    __m512i intersection_end_popcount = _mm512_add_epi8(
+        _mm512_shuffle_epi8(lookup, intersection_end_low),
+        _mm512_shuffle_epi8(lookup, intersection_end_high));
+    __m512i union_start_popcount = _mm512_add_epi8(
+        _mm512_shuffle_epi8(lookup, union_start_low),
+        _mm512_shuffle_epi8(lookup, union_start_high));
+    __m512i union_end_popcount = _mm512_add_epi8(
+        _mm512_shuffle_epi8(lookup, union_end_low),
+        _mm512_shuffle_epi8(lookup, union_end_high));
+    
+    __m512i intersection = _mm512_dpbusd_epi32(_mm512_setzero_si512(), intersection_start_popcount, ones);
+    intersection = _mm512_dpbusd_epi32(intersection, intersection_end_popcount, ones);
+
+    __m512i union_ = _mm512_dpbusd_epi32(_mm512_setzero_si512(), union_start_popcount, ones);
+    union_ = _mm512_dpbusd_epi32(union_, union_end_popcount, ones);
+            
+    return 1.f - (_mm512_reduce_add_epi32(intersection) + 1.f) / (_mm512_reduce_add_epi32(union_) + 1.f);
+}
+"""
+
 cppyy.cppdef(jaccard_u8x128_cpp)
 cppyy.cppdef(jaccard_u64x16_cpp)
 cppyy.cppdef(jaccard_b1024_vpopcntq)
-cppyy.cppdef(jaccard_b1024_vpshufb)
+cppyy.cppdef(jaccard_b1024_vpshufb_sad)
+cppyy.cppdef(jaccard_b1024_vpshufb_dpb)
 
 
 def generate_random_vectors(count: int, bits_per_vector: int) -> np.ndarray:
@@ -278,9 +336,14 @@ def main(
             cppyy.ll.addressof(cppyy.gbl.jaccard_b1024_vpopcntq),
         ),
         (
-            "jaccard_b1024_vpshufb",
-            cppyy.gbl.jaccard_b1024_vpshufb,
-            cppyy.ll.addressof(cppyy.gbl.jaccard_b1024_vpshufb),
+            "jaccard_b1024_vpshufb_sad",
+            cppyy.gbl.jaccard_b1024_vpshufb_sad,
+            cppyy.ll.addressof(cppyy.gbl.jaccard_b1024_vpshufb_sad),
+        ),
+        (
+            "jaccard_b1024_vpshufb_dpb",
+            cppyy.gbl.jaccard_b1024_vpshufb_dpb,
+            cppyy.ll.addressof(cppyy.gbl.jaccard_b1024_vpshufb_dpb),
         ),
     ]
     kernels_numba_1024d = [
@@ -317,9 +380,9 @@ def main(
                 ), f"Distance mismatch for {name} kernel: {baseline_distance} vs {accelerated_distance}"
 
         # Run the benchmarks:
+        print("-" * 80)
         for name, _, kernel_pointer in kernels_cpp_1024d + kernels_numba_1024d:
-            print("-" * 80)
-            print(f"Profiling `{name}` kernel over {count:,} vectors")
+            print(f"Profiling `{name}` over {count:,} vectors")
             stats = bench_kernel(
                 kernel_pointer=kernel_pointer,
                 vectors=vectors,
@@ -327,9 +390,8 @@ def main(
                 approximate=approximate,
                 threads=threads,
             )
-            print()
-            print(f"BOP/S: {stats['bit_ops_per_s'] / 1e9:,.2f} G")
-            print(f"Recall@1: {stats['recalled_top_match'] / count:.2%}")
+            print(f"- BOP/S: {stats['bit_ops_per_s'] / 1e9:,.2f} G")
+            print(f"- Recall@1: {stats['recalled_top_match'] / count:.2%}")
 
 
 if __name__ == "__main__":
