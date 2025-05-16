@@ -244,11 +244,47 @@ static float jaccard_b1024_vpshufb_dpb(uint8_t const * first_vector, uint8_t con
 }
 """
 
+# Harley-Seal transformation and Odd-Major-style Carry-Save-Adders can be used to replace
+# several population counts with a few bitwise operations and one `popcount`, which can help
+# lift the pressure on the CPU ports.
+jaccard_u64x16_csa3_cpp = """
+inline int popcount_csa3(uint64_t x, uint64_t y, uint64_t z) {
+    uint64_t odd  = (x ^ y) ^ z;
+    uint64_t major = ((x ^ y ) & z) | (x & y);
+    return 2 * __builtin_popcountll(major) + __builtin_popcountll(odd);
+}
+
+static float jaccard_u64x16_csa3_cpp(uint8_t const * a, uint8_t const * b) {
+    uint64_t const *a64 = (uint64_t const *)a;
+    uint64_t const *b64 = (uint64_t const *)b;
+    
+    int intersection =
+        popcount_csa3(a64[0] & b64[0], a64[1] & b64[1], a64[2] & b64[2]) +
+        popcount_csa3(a64[3] & b64[3], a64[4] & b64[4], a64[5] & b64[5]) +
+        popcount_csa3(a64[6] & b64[6], a64[7] & b64[7], a64[8] & b64[8]) +
+        popcount_csa3(a64[9] & b64[9], a64[10] & b64[10], a64[11] & b64[11]) +
+        popcount_csa3(a64[12] & b64[12], a64[13] & b64[13], a64[14] & b64[14]) +
+        __builtin_popcountll(a64[15] & b64[15]);
+    
+        
+    int union_ =
+        popcount_csa3(a64[0] | b64[0], a64[1] | b64[1], a64[2] | b64[2]) +
+        popcount_csa3(a64[3] | b64[3], a64[4] | b64[4], a64[5] | b64[5]) +
+        popcount_csa3(a64[6] | b64[6], a64[7] | b64[7], a64[8] | b64[8]) +
+        popcount_csa3(a64[9] | b64[9], a64[10] | b64[10], a64[11] | b64[11]) +
+        popcount_csa3(a64[12] | b64[12], a64[13] | b64[13], a64[14] | b64[14]) +
+        __builtin_popcountll(a64[15] | b64[15]);
+    
+    return 1.f - (intersection + 1.f) / (union_ + 1.f); // ! Avoid division by zero
+}
+"""
+
 cppyy.cppdef(jaccard_u8x128_cpp)
 cppyy.cppdef(jaccard_u64x16_cpp)
 cppyy.cppdef(jaccard_b1024_vpopcntq)
 cppyy.cppdef(jaccard_b1024_vpshufb_sad)
 cppyy.cppdef(jaccard_b1024_vpshufb_dpb)
+cppyy.cppdef(jaccard_u64x16_csa3_cpp)
 
 
 def generate_random_vectors(count: int, bits_per_vector: int) -> np.ndarray:
@@ -328,6 +364,11 @@ def main(
             "jaccard_u8x128_cpp",
             cppyy.gbl.jaccard_u8x128_cpp,
             cppyy.ll.addressof(cppyy.gbl.jaccard_u8x128_cpp),
+        ),
+        (
+            "jaccard_u64x16_csa3_cpp",
+            cppyy.gbl.jaccard_u64x16_csa3_cpp,
+            cppyy.ll.addressof(cppyy.gbl.jaccard_u64x16_csa3_cpp),
         ),
         # SIMD:
         (
