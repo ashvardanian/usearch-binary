@@ -6,8 +6,6 @@
 #   "cppyy",
 #   "usearch",
 #   "faiss-cpu",
-#   "pytest",
-#   "pytest-benchmark",
 # ]
 # ///
 
@@ -81,7 +79,7 @@ def jaccard_u64x4_numba(a, b):
 
 
 jaccard_u64x4_c = """
-static float jaccard_u64x4_c(uint8_t const * a, uint8_t const * b) {
+static float jaccard_u64x4_c(uint8_t const *a, uint8_t const *b) {
     uint32_t intersection = 0, union_ = 0;
     uint64_t const *a64 = (uint64_t const *)a;
     uint64_t const *b64 = (uint64_t const *)b;
@@ -109,7 +107,7 @@ inline uint64_t _mm256_reduce_add_epi64(__m256i vec) {
 }
 
 __attribute__((target("avx2,bmi2,avx")))
-static float jaccard_b256_vpshufb_sad(uint8_t const * first_vector, uint8_t const * second_vector) {
+static float jaccard_b256_vpshufb_sad(uint8_t const *first_vector, uint8_t const *second_vector) {
     __m256i first = _mm256_loadu_epi8((__m256i const*)(first_vector));
     __m256i second = _mm256_loadu_epi8((__m256i const*)(second_vector));
     
@@ -146,7 +144,7 @@ jaccard_b256_vpopcntq = """
 #include <immintrin.h>
 
 __attribute__((target("avx512f,avx512vl,bmi2,avx512bw,avx512dq")))
-static float jaccard_b256_vpopcntq(uint8_t const * first_vector, uint8_t const * second_vector) {
+static float jaccard_b256_vpopcntq(uint8_t const *first_vector, uint8_t const *second_vector) {
     __m256i first = _mm256_loadu_epi8((__m256i const*)(first_vector));
     __m256i second = _mm256_loadu_epi8((__m256i const*)(second_vector));
     
@@ -190,7 +188,7 @@ def jaccard_u64x16_numba(a, b):
 
 
 jaccard_u8x128_c = """
-static float jaccard_u8x128_c(uint8_t const * a, uint8_t const * b) {
+static float jaccard_u8x128_c(uint8_t const *a, uint8_t const *b) {
     uint32_t intersection = 0, union_ = 0;
 #pragma unroll
     for (size_t i = 0; i != 128; ++i)
@@ -201,7 +199,7 @@ static float jaccard_u8x128_c(uint8_t const * a, uint8_t const * b) {
 """
 
 jaccard_u64x16_c = """
-static float jaccard_u64x16_c(uint8_t const * a, uint8_t const * b) {
+static float jaccard_u64x16_c(uint8_t const *a, uint8_t const *b) {
     uint32_t intersection = 0, union_ = 0;
     uint64_t const *a64 = (uint64_t const *)a;
     uint64_t const *b64 = (uint64_t const *)b;
@@ -218,7 +216,7 @@ static float jaccard_u64x16_c(uint8_t const * a, uint8_t const * b) {
 jaccard_b1024_vpopcntq = """
 #include <immintrin.h>
 __attribute__((target("avx512f,avx512vl,bmi2,avx512bw,avx512dq")))
-static float jaccard_b1024_vpopcntq(uint8_t const * first_vector, uint8_t const * second_vector) {
+static float jaccard_b1024_vpopcntq(uint8_t const *first_vector, uint8_t const *second_vector) {
     __m512i first_start = _mm512_loadu_si512((__m512i const*)(first_vector));
     __m512i first_end = _mm512_loadu_si512((__m512i const*)(first_vector + 64));
     __m512i second_start = _mm512_loadu_si512((__m512i const*)(second_vector));
@@ -241,7 +239,7 @@ static float jaccard_b1024_vpopcntq(uint8_t const * first_vector, uint8_t const 
 jaccard_b1024_vpshufb_sad = """
 #include <immintrin.h>
 __attribute__((target("avx512f,avx512vl,bmi2,avx512bw,avx512dq")))
-static float jaccard_b1024_vpshufb_sad(uint8_t const * first_vector, uint8_t const * second_vector) {
+static float jaccard_b1024_vpshufb_sad(uint8_t const *first_vector, uint8_t const *second_vector) {
     __m512i first_start = _mm512_loadu_si512((__m512i const*)(first_vector));
     __m512i first_end = _mm512_loadu_si512((__m512i const*)(first_vector + 64));
     __m512i second_start = _mm512_loadu_si512((__m512i const*)(second_vector));
@@ -298,7 +296,7 @@ static float jaccard_b1024_vpshufb_sad(uint8_t const * first_vector, uint8_t con
 jaccard_b1024_vpshufb_dpb = """
 #include <immintrin.h>
 __attribute__((target("avx512f,avx512vl,bmi2,avx512bw,avx512dq")))
-static float jaccard_b1024_vpshufb_dpb(uint8_t const * first_vector, uint8_t const * second_vector) {
+static float jaccard_b1024_vpshufb_dpb(uint8_t const *first_vector, uint8_t const *second_vector) {
     __m512i first_start = _mm512_loadu_si512((__m512i const*)(first_vector));
     __m512i first_end = _mm512_loadu_si512((__m512i const*)(first_vector + 64));
     __m512i second_start = _mm512_loadu_si512((__m512i const*)(second_vector));
@@ -360,7 +358,7 @@ inline int popcount_csa3(uint64_t x, uint64_t y, uint64_t z) {
     return 2 * __builtin_popcountll(major) + __builtin_popcountll(odd);
 }
 
-static float jaccard_u64x16_csa3_c(uint8_t const * a, uint8_t const * b) {
+static float jaccard_u64x16_csa3_c(uint8_t const *a, uint8_t const *b) {
     uint64_t const *a64 = (uint64_t const *)a;
     uint64_t const *b64 = (uint64_t const *)b;
     
@@ -431,7 +429,7 @@ constexpr int popcount_csa15(
     return count_ones + 2 * count_twos + 4 * count_four + 8 * count_eight;
 }
 
-static float jaccard_u64x16_csa15_cpp(uint8_t const * a, uint8_t const * b) {
+static float jaccard_u64x16_csa15_cpp(uint8_t const *a, uint8_t const *b) {
     uint64_t const *a64 = (uint64_t const *)a;
     uint64_t const *b64 = (uint64_t const *)b;
     
@@ -479,7 +477,7 @@ def jaccard_u64x24_numba(a, b):
 
 
 jaccard_u64x24_c = """
-static float jaccard_u64x24_c(uint8_t const * a, uint8_t const * b) {
+static float jaccard_u64x24_c(uint8_t const *a, uint8_t const *b) {
     uint32_t intersection = 0, union_ = 0;
     uint64_t const *a64 = (uint64_t const *)a;
     uint64_t const *b64 = (uint64_t const *)b;
@@ -496,7 +494,7 @@ static float jaccard_u64x24_c(uint8_t const * a, uint8_t const * b) {
 jaccard_b1536_vpopcntq = """
 #include <immintrin.h>
 __attribute__((target("avx512f,avx512vl,bmi2,avx512bw,avx512dq")))
-static float jaccard_b1536_vpopcntq(uint8_t const * first_vector, uint8_t const * second_vector) {
+static float jaccard_b1536_vpopcntq(uint8_t const *first_vector, uint8_t const *second_vector) {
     __m512i first0 = _mm512_loadu_si512((__m512i const*)(first_vector + 64 * 0));
     __m512i first1 = _mm512_loadu_si512((__m512i const*)(first_vector + 64 * 1));
     __m512i first2 = _mm512_loadu_si512((__m512i const*)(first_vector + 64 * 2));
@@ -523,7 +521,7 @@ static float jaccard_b1536_vpopcntq(uint8_t const * first_vector, uint8_t const 
 jaccard_b1536_vpopcntq_3csa = """
 #include <immintrin.h>
 __attribute__((target("avx512f,avx512vl,bmi2,avx512bw,avx512dq")))
-static float jaccard_b1536_vpopcntq_3csa(uint8_t const * first_vector, uint8_t const * second_vector) {
+static float jaccard_b1536_vpopcntq_3csa(uint8_t const *first_vector, uint8_t const *second_vector) {
 
     __m512i first0 = _mm512_loadu_si512((__m512i const*)(first_vector + 64 * 0));
     __m512i first1 = _mm512_loadu_si512((__m512i const*)(first_vector + 64 * 1));
@@ -593,14 +591,15 @@ def bench_faiss(
         _, matches = faiss_knn_hamming(vectors, vectors, k)
     elapsed = time.perf_counter() - start
 
-    computed = n * n
+    computed_distances = n * n
     recalled_top_match = int((matches[:, 0] == np.arange(n)).sum())
-    bop_per_dist = vectors.shape[1] * (8 if vectors.dtype == np.uint8 else 1) * 2
+    bits_per_vector = vectors.shape[1] * 8
+    bit_ops_per_distance = bits_per_vector * 2
     return {
         "elapsed_s": elapsed,
-        "computed_distances": computed,
-        "visited_members": computed,
-        "bit_ops_per_s": computed * bop_per_dist / elapsed,
+        "computed_distances": computed_distances,
+        "visited_members": computed_distances,
+        "bit_ops_per_s": computed_distances * bit_ops_per_distance / elapsed,
         "recalled_top_match": recalled_top_match,
     }
 
@@ -838,38 +837,40 @@ def main(
 if __name__ == "__main__":
     from argparse import ArgumentParser
 
-    args = ArgumentParser()
-    args.add_argument(
+    arg_parser = ArgumentParser(
+        description="Comparing HPC kernels for Jaccard distance"
+    )
+    arg_parser.add_argument(
         "--count",
         type=int,
         default=1000,
         help="Number of vectors to generate for the benchmark",
     )
-    args.add_argument(
+    arg_parser.add_argument(
         "--k",
         type=int,
         default=1,
         help="Number of nearest neighbors to search for",
     )
-    args.add_argument(
+    arg_parser.add_argument(
         "--ndims",
         type=int,
         nargs="+",
         default=[256, 1024, 1536],
         help="List of dimensions to test (e.g., 256, 1024, 1536)",
     )
-    args.add_argument(
+    arg_parser.add_argument(
         "--approximate",
         action="store_true",
         help="Use approximate search instead of exact search",
     )
-    args.add_argument(
+    arg_parser.add_argument(
         "--threads",
         type=int,
         default=1,
         help="Number of threads to use for the benchmark",
     )
-    args = args.parse_args()
+    args = arg_parser.parse_args()
     main(
         count=args.count,
         k=args.k,

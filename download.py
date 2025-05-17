@@ -4,15 +4,15 @@
 #   "numpy",
 #   "pandas",
 #   "pyarrow",
-#   "argparse",
 # ]
 # ///
 
 # ? This script downloads and processes precompute vector embeddings
 # ? of WikiPedia from Hugging Face. To use it:
-# ? ```bash
-# ? python download.py --dataset cohere-en
-# ? ```
+# ?
+# ?     uv run --script download.py --dataset cohere-en
+# ?     uv run --script download.py --dataset cohere-en --quantize
+# ?
 # ? Consider checking the `harley-seal.py` script afterwards with tests
 # ? for advanced population-counting schemes and other optimizations.
 
@@ -22,7 +22,6 @@ import subprocess
 import multiprocessing
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Literal
-import argparse
 
 import numpy as np
 import pandas as pd
@@ -479,7 +478,9 @@ def download_dataset(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    from argparse import ArgumentParser
+
+    parser = ArgumentParser(description="Download and quantize embeddings from HF")
     parser.add_argument(
         "--dataset",
         type=str,
