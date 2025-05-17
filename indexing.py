@@ -188,7 +188,11 @@ def main(
     print("-" * 80)
     metric_name = metric.capitalize()
     print(f"Building `b1` index for {limit:,} vectors with {metric_name} metric")
-    index = Index(ndim=ndim, dtype="b1", metric=metric)
+    index = Index(
+        ndim=ndim,
+        dtype="b1",
+        metric="tanimoto" if metric == "jaccard" else "hamming",
+    )
     index.add(keys, embeddings_binary, log=True)
     stats: SearchStats = self_recall(
         index,
