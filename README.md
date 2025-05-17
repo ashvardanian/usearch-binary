@@ -12,12 +12,12 @@ In code, one would rarely deal with `boolean` values due to obvious space-ineffi
 #include <bits> // brings `std::popcount`
 #include <cstdint> // brings `std::size_t`
 
-float jaccard(std::uint8_t const* first_vector, std::uint8_t const* second_vector, std::size_t count_octets) {
+float jaccard(std::uint8_t const* a_vector, std::uint8_t const* b_vector, std::size_t count_octets) {
     std::size_t intersection = 0, union_ = 0;
     for (std::size_t i = 0; i < count_octets; ++i) {
-        std::uint8_t first_octet = first_vector[i], second_octet = second_vector[i];
-        intersection += std::popcount(first_octet & second_octet);
-        union_ += std::popcount(rst_octet | second_octet);
+        std::uint8_t a_octet = a_vector[i], b_octet = b_vector[i];
+        intersection += std::popcount(a_octet & b_octet);
+        union_ += std::popcount(rst_octet | b_octet);
     }
     return (float)intersection / (float)union_;
 }
@@ -29,6 +29,7 @@ Assuming how often bit-level representation are now used in large-scale vector s
 - Using lookup tables to speed up population counts.
 - Using [Harley-Seal](https://en.wikipedia.org/wiki/Harley%E2%80%93Seal_adder) and Odd-Majority [CSAs](https://en.wikipedia.org/wiki/Carry-save_adder) for population counts.
 - Loop unrolling and inlining.
+- 🔜 Floating-point operations instead of integer ones.
 
 ---
 
@@ -65,13 +66,13 @@ If the embeddings are only 1024 bits long, we only need 2 `ZMM` CPU registers on
 We don't need any `for`-loops, the entire operation can be unrolled and inlined.
 
 ```c
-uint64_t hamming_distance_1024d(uint8_t const* first_vector, uint8_t const* second_vector) {
-    __m512i first_start = _mm512_loadu_si512((__m512i const*)(first_vector));
-    __m512i first_end = _mm512_loadu_si512((__m512i const*)(first_vector + 64));
-    __m512i second_start = _mm512_loadu_si512((__m512i const*)(second_vector));
-    __m512i second_end = _mm512_loadu_si512((__m512i const*)(second_vector + 64));
-    __m512i differences_start = _mm512_xor_epi64(first_start, second_start);
-    __m512i differences_end = _mm512_xor_epi64(first_end, second_end);
+uint64_t hamming_distance_1024d(uint8_t const* a_vector, uint8_t const* b_vector) {
+    __m512i a_start = _mm512_loadu_si512((__m512i const*)(a_vector));
+    __m512i a_end = _mm512_loadu_si512((__m512i const*)(a_vector + 64));
+    __m512i b_start = _mm512_loadu_si512((__m512i const*)(b_vector));
+    __m512i b_end = _mm512_loadu_si512((__m512i const*)(b_vector + 64));
+    __m512i differences_start = _mm512_xor_epi64(a_start, b_start);
+    __m512i differences_end = _mm512_xor_epi64(a_end, b_end);
     __m512i population_start = _mm512_popcnt_epi64(differences_start);
     __m512i population_end = _mm512_popcnt_epi64(differences_end);
     __m512i population = _mm512_add_epi64(population_start, population_end);
@@ -110,15 +111,15 @@ Interestingly, the `EVEX` variants of `VPSHUFB` and `VPDPBUSDS` instructions tak
 So when implementing the Jaccard distance, the most important kernel for binary similarity indices using the `VPOPCNTQ`, we will have 4 such instruction invocations that will all stall on the same port number 5:
 
 ```c
-float jaccard_distance_1024d(uint8_t const* first_vector, uint8_t const* second_vector) {
-    __m512i first_start = _mm512_loadu_si512((__m512i const*)(first_vector));
-    __m512i first_end = _mm512_loadu_si512((__m512i const*)(first_vector + 64));
-    __m512i second_start = _mm512_loadu_si512((__m512i const*)(second_vector));
-    __m512i second_end = _mm512_loadu_si512((__m512i const*)(second_vector + 64));
-    __m512i intersection_start = _mm512_and_epi64(first_start, second_start);
-    __m512i intersection_end = _mm512_and_epi64(first_end, second_end);
-    __m512i union_start = _mm512_or_epi64(first_start, second_start);
-    __m512i union_end = _mm512_or_epi64(first_end, second_end);
+float jaccard_distance_1024d(uint8_t const* a_vector, uint8_t const* b_vector) {
+    __m512i a_start = _mm512_loadu_si512((__m512i const*)(a_vector));
+    __m512i a_end = _mm512_loadu_si512((__m512i const*)(a_vector + 64));
+    __m512i b_start = _mm512_loadu_si512((__m512i const*)(b_vector));
+    __m512i b_end = _mm512_loadu_si512((__m512i const*)(b_vector + 64));
+    __m512i intersection_start = _mm512_and_epi64(a_start, b_start);
+    __m512i intersection_end = _mm512_and_epi64(a_end, b_end);
+    __m512i union_start = _mm512_or_epi64(a_start, b_start);
+    __m512i union_end = _mm512_or_epi64(a_end, b_end);
     __m512i population_intersection_start = _mm512_popcnt_epi64(intersection_start);
     __m512i population_intersection_end = _mm512_popcnt_epi64(intersection_end);
     __m512i population_union_start = _mm512_popcnt_epi64(union_start);
@@ -138,12 +139,12 @@ The idea may seem costly compared to `_mm512_popcnt_epi64`, but depends on the n
 Here's what a minimal kernel for 245-dimensional Jaccard distance may look like:
 
 ```c
-float jaccard_distance_256d(uint8_t const *first_vector, uint8_t const *second_vector) {
-    __m256i first = _mm256_loadu_epi8((__m256i const*)(first_vector));
-    __m256i second = _mm256_loadu_epi8((__m256i const*)(second_vector));
+float jaccard_distance_256d(uint8_t const *a_vector, uint8_t const *b_vector) {
+    __m256i a = _mm256_loadu_epi8((__m256i const*)(a_vector));
+    __m256i b = _mm256_loadu_epi8((__m256i const*)(b_vector));
     
-    __m256i intersection = _mm256_and_epi64(first, second);
-    __m256i union_ = _mm256_or_epi64(first, second);
+    __m256i intersection = _mm256_and_epi64(a, b);
+    __m256i union_ = _mm256_or_epi64(a, b);
 
     __m256i low_mask = _mm256_set1_epi8(0x0f);
     __m256i lookup = _mm256_set_epi8(
@@ -171,9 +172,9 @@ float jaccard_distance_256d(uint8_t const *first_vector, uint8_t const *second_v
 The `_mm256_reduce_add_epi64` is a product of our imagination, but you can guess what it does: 
 
 ```c
-uint64_t _mm256_reduce_add_epi64(__m256i vec) {
-    __m128i lo128 = _mm256_castsi256_si128(vec);
-    __m128i hi128 = _mm256_extracti128_si256(vec, 1);
+uint64_t _mm256_reduce_add_epi64(__m256i x) {
+    __m128i lo128 = _mm256_castsi256_si128(x);
+    __m128i hi128 = _mm256_extracti128_si256(x, 1);
     __m128i sum128 = _mm_add_epi64(lo128, hi128);
     __m128i hi64 = _mm_unpackhi_epi64(sum128, sum128);
     __m128i total = _mm_add_epi64(sum128, hi64);
@@ -223,7 +224,7 @@ So $N$ "Odd-Major" population counts can cover the logic needed for the $2^N-1$ 
 - 15x `std::popcount` can be reduced to 4x.
 - 31x `std::popcount` can be reduced to 5x.
 
-When dealing with 1024-dimensional bit-vectors on 64-bit machines, we can view them as 16x 64-bit words, leveraging the "Odd-Majority" trick to fold first 15x `std::popcount` into 4x, and then having 1x more call for the tail, thus shrinking from 16x to 5x calls, at the cost of several `XOR` and `AND` operations.
+When dealing with 1024-dimensional bit-vectors on 64-bit machines, we can view them as 16x 64-bit words, leveraging the "Odd-Majority" trick to fold a 15x `std::popcount` into 4x, and then having 1x more call for the tail, thus shrinking from 16x to 5x calls, at the cost of several `XOR` and `AND` operations.
 Sadly, even on Intel Sapphire Rapids, none of the CSA schemes result in gains compared to `VPOPCNTQ`:
 
 ```sh
@@ -240,3 +241,4 @@ Profiling `jaccard_b1536_vpopcntq_3csa` in USearch over 1,000 vectors
 - [Population Counts in Chess Engines](https://www.chessprogramming.org/Population_Count).
 - [Faster Population Counts Using AVX2 Instructions](https://arxiv.org/abs/1611.07612), + [code](https://github.com/CountOnes/hamming_weight).
 - [Carry-Save Adders](https://en.wikipedia.org/wiki/Carry-save_adder).
+- [Tricks With the Floating-Point Format](https://randomascii.wordpress.com/2012/01/11/tricks-with-the-floating-point-format/)
