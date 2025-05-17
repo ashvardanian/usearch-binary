@@ -65,6 +65,9 @@ def popcount_u64_numba(v):
     return v
 
 
+# region: 1024d kernels
+
+
 @cfunc(types.float32(types.CPointer(types.uint8), types.CPointer(types.uint8)))
 def jaccard_u8x128_numba(a, b):
     a_array = carray(a, 128)
@@ -342,7 +345,6 @@ static float jaccard_u64x16_csa15_cpp(uint8_t const * a, uint8_t const * b) {
         a64[12] & b64[12], a64[13] & b64[13], a64[14] & b64[14]) +
         __builtin_popcountll(a64[15] & b64[15]);
     
-        
     int union_ = popcount_csa15(
         a64[0] | b64[0], a64[1] | b64[1], a64[2] | b64[2], a64[3] | b64[3],
         a64[4] | b64[4], a64[5] | b64[5], a64[6] | b64[6], a64[7] | b64[7],
@@ -361,6 +363,115 @@ cppyy.cppdef(jaccard_b1024_vpshufb_sad)
 cppyy.cppdef(jaccard_b1024_vpshufb_dpb)
 cppyy.cppdef(jaccard_u64x16_csa3_c)
 cppyy.cppdef(jaccard_u64x16_csa15_cpp)
+
+# endregion
+
+# region: 1536d kernels
+
+
+@cfunc(types.float32(types.CPointer(types.uint64), types.CPointer(types.uint64)))
+def jaccard_u64x24_numba(a, b):
+    a_array = carray(a, 24)
+    b_array = carray(b, 24)
+    intersection = 0
+    union = 0
+    for i in range(24):
+        intersection += popcount_u64_numba(a_array[i] & b_array[i])
+        union += popcount_u64_numba(a_array[i] | b_array[i])
+    return 1.0 - (intersection + 1.0) / (union + 1.0)  # ! Avoid division by zero
+
+
+jaccard_u64x24_c = """
+static float jaccard_u64x24_c(uint8_t const * a, uint8_t const * b) {
+    uint32_t intersection = 0, union_ = 0;
+    uint64_t const *a64 = (uint64_t const *)a;
+    uint64_t const *b64 = (uint64_t const *)b;
+#pragma unroll
+    for (size_t i = 0; i != 24; ++i)
+        intersection += __builtin_popcountll(a64[i] & b64[i]),
+        union_ += __builtin_popcountll(a64[i] | b64[i]);
+    return 1.f - (intersection + 1.f) / (union_ + 1.f); // ! Avoid division by zero
+}
+"""
+
+# Define the AVX-512 variant using the `vpopcntq` instruction for 1536d vectors
+# It's known to over-rely on port 5 on x86 CPUs, so the next `vpshufb` variant should be faster.
+jaccard_b1536_vpopcntq = """
+#include <immintrin.h>
+__attribute__((target("avx512f,avx512vl,bmi2,avx512bw,avx512dq")))
+static float jaccard_b1536_vpopcntq(uint8_t const * first_vector, uint8_t const * second_vector) {
+    __m512i first0 = _mm512_loadu_si512((__m512i const*)(first_vector + 64 * 0));
+    __m512i first1 = _mm512_loadu_si512((__m512i const*)(first_vector + 64 * 1));
+    __m512i first2 = _mm512_loadu_si512((__m512i const*)(first_vector + 64 * 2));
+    __m512i second0 = _mm512_loadu_si512((__m512i const*)(second_vector + 64 * 0));
+    __m512i second1 = _mm512_loadu_si512((__m512i const*)(second_vector + 64 * 1));
+    __m512i second2 = _mm512_loadu_si512((__m512i const*)(second_vector + 64 * 2));
+    
+    __m512i intersection0 = _mm512_popcnt_epi64(_mm512_and_epi64(first0, second0));
+    __m512i intersection1 = _mm512_popcnt_epi64(_mm512_and_epi64(first1, second1));
+    __m512i intersection2 = _mm512_popcnt_epi64(_mm512_and_epi64(first2, second2));
+    __m512i union0 = _mm512_popcnt_epi64(_mm512_or_epi64(first0, second0));
+    __m512i union1 = _mm512_popcnt_epi64(_mm512_or_epi64(first1, second1));
+    __m512i union2 = _mm512_popcnt_epi64(_mm512_or_epi64(first2, second2));
+    
+    __m512i intersection = _mm512_add_epi64(_mm512_add_epi64(intersection0, intersection1), intersection2);
+    __m512i union_ = _mm512_add_epi64(_mm512_add_epi64(union0, union1), union2);
+    return 1.f - (_mm512_reduce_add_epi64(intersection) + 1.f) / (_mm512_reduce_add_epi64(union_) + 1.f);
+}
+"""
+
+# Define the AVX-512 variant, combining Harley-Seal transform to reduce the number
+# of population counts for the 1536-dimensional case to the 1024-dimensional case,
+# at the cost of several ternary bitwise operations.
+jaccard_b1536_vpopcntq_3csa = """
+#include <immintrin.h>
+__attribute__((target("avx512f,avx512vl,bmi2,avx512bw,avx512dq")))
+static float jaccard_b1536_vpopcntq_3csa(uint8_t const * first_vector, uint8_t const * second_vector) {
+
+    __m512i first0 = _mm512_loadu_si512((__m512i const*)(first_vector + 64 * 0));
+    __m512i first1 = _mm512_loadu_si512((__m512i const*)(first_vector + 64 * 1));
+    __m512i first2 = _mm512_loadu_si512((__m512i const*)(first_vector + 64 * 2));
+    __m512i second0 = _mm512_loadu_si512((__m512i const*)(second_vector + 64 * 0));
+    __m512i second1 = _mm512_loadu_si512((__m512i const*)(second_vector + 64 * 1));
+    __m512i second2 = _mm512_loadu_si512((__m512i const*)(second_vector + 64 * 2));
+    
+    __m512i intersection0 = _mm512_and_epi64(first0, second0);
+    __m512i intersection1 = _mm512_and_epi64(first1, second1);
+    __m512i intersection2 = _mm512_and_epi64(first2, second2);
+    __m512i union0 = _mm512_or_epi64(first0, second0);
+    __m512i union1 = _mm512_or_epi64(first1, second1);
+    __m512i union2 = _mm512_or_epi64(first2, second2);
+    
+    __m512i intersection_odd = _mm512_ternarylogic_epi64(
+        intersection0, intersection1, intersection2, 
+        (_MM_TERNLOG_A ^ _MM_TERNLOG_B ^ _MM_TERNLOG_C));
+    __m512i intersection_major = _mm512_ternarylogic_epi64(
+        intersection0, intersection1, intersection2, 
+        ((_MM_TERNLOG_A ^ _MM_TERNLOG_B) & _MM_TERNLOG_C) | (_MM_TERNLOG_A & _MM_TERNLOG_B));
+    __m512i union_odd = _mm512_ternarylogic_epi64(
+        union0, union1, union2, 
+        (_MM_TERNLOG_A ^ _MM_TERNLOG_B ^ _MM_TERNLOG_C));
+    __m512i union_major = _mm512_ternarylogic_epi64(
+        union0, union1, union2, 
+        ((_MM_TERNLOG_A ^ _MM_TERNLOG_B) & _MM_TERNLOG_C) | (_MM_TERNLOG_A & _MM_TERNLOG_B));
+    
+    __m512i intersection_odd_count = _mm512_popcnt_epi64(intersection_odd);
+    __m512i intersection_major_count = _mm512_popcnt_epi64(intersection_major);
+    __m512i union_odd_count = _mm512_popcnt_epi64(union_odd);
+    __m512i union_major_count = _mm512_popcnt_epi64(union_major);
+
+    // Shift left the majors by one to multiply by two
+    __m512i intersection = _mm512_add_epi64(_mm512_slli_epi64(intersection_major_count, 1), intersection_odd_count);
+    __m512i union_ = _mm512_add_epi64(_mm512_slli_epi64(union_major_count, 1), union_odd_count);
+    return 1.f - (_mm512_reduce_add_epi64(intersection) + 1.f) / (_mm512_reduce_add_epi64(union_) + 1.f);
+}
+"""
+
+cppyy.cppdef(jaccard_u64x24_c)
+cppyy.cppdef(jaccard_b1536_vpopcntq)
+cppyy.cppdef(jaccard_b1536_vpopcntq_3csa)
+
+# endregion
 
 
 def generate_random_vectors(count: int, bits_per_vector: int) -> np.ndarray:
@@ -450,7 +561,7 @@ def bench_kernel(
 def main(
     count: int,
     k: int = 1,
-    ndims: List[int] = [1024],
+    ndims: List[int] = [1024, 1536],
     approximate: bool = True,
     threads: int = 1,
 ):
@@ -508,12 +619,55 @@ def main(
             jaccard_u8x128_numba.address,
         ),
     ]
-    if 1024 in ndims:
-        vectors = generate_random_vectors(count, 1024)
+    kernels_cpp_1536d = [
+        # C++:
+        (
+            "jaccard_u64x24_c",
+            cppyy.gbl.jaccard_u64x24_c,
+            cppyy.ll.addressof(cppyy.gbl.jaccard_u64x24_c),
+        ),
+        # SIMD:
+        (
+            "jaccard_b1536_vpopcntq",
+            cppyy.gbl.jaccard_b1536_vpopcntq,
+            cppyy.ll.addressof(cppyy.gbl.jaccard_b1536_vpopcntq),
+        ),
+        (
+            "jaccard_b1536_vpopcntq_3csa",
+            cppyy.gbl.jaccard_b1536_vpopcntq_3csa,
+            cppyy.ll.addressof(cppyy.gbl.jaccard_b1536_vpopcntq_3csa),
+        ),
+    ]
+    kernels_numba_1536d = [
+        # Baselines:
+        (
+            "jaccard_u64x24_numba",
+            jaccard_u64x24_numba,
+            jaccard_u64x24_numba.address,
+        ),
+    ]
+
+    # Group kernels by dimension:
+    kernels_cpp_per_dimension = {
+        1024: kernels_cpp_1024d,
+        1536: kernels_cpp_1536d,
+    }
+    kernels_numba_per_dimension = {
+        1024: kernels_numba_1024d,
+        1536: kernels_numba_1536d,
+    }
+
+    # Check which dimensions should be covered:
+    for ndim in ndims:
+        print("-" * 80)
+        print(f"Testing {ndim:,}d kernels")
+        kernels_cpp = kernels_cpp_per_dimension.get(ndim, [])
+        kernels_numba = kernels_numba_per_dimension.get(ndim, [])
+        vectors = generate_random_vectors(count, ndim)
 
         # Run a few tests on this data:
         tests_per_kernel = 10
-        for name, accelerated_kernel, _ in kernels_cpp_1024d:
+        for name, accelerated_kernel, _ in kernels_cpp:
             for _ in range(tests_per_kernel):
                 first_vector_index = np.random.randint(0, count)
                 second_vector_index = np.random.randint(0, count)
@@ -527,10 +681,9 @@ def main(
                     abs(baseline_distance - accelerated_distance) < 1e-5
                 ), f"Distance mismatch for {name} kernel: {baseline_distance} vs {accelerated_distance}"
 
-        # Run the benchmarks:
-        print("-" * 80)
+        print("- passed!")
 
-        # Provide FAISS baselines:
+        # Provide FAISS benchmarking baselines:
         for name in ["Jaccard", "Hamming"]:
             print(f"Profiling FAISS over {count:,} vectors with {name} metric")
             stats = bench_faiss(
@@ -543,7 +696,7 @@ def main(
             print(f"- Recall@1: {stats['recalled_top_match'] / count:.2%}")
 
         # Analyze all the kernels:
-        for name, _, kernel_pointer in kernels_cpp_1024d + kernels_numba_1024d:
+        for name, _, kernel_pointer in kernels_cpp + kernels_numba:
             print(f"Profiling `{name}` in USearch over {count:,} vectors")
             stats = bench_kernel(
                 kernel_pointer=kernel_pointer,
@@ -576,8 +729,8 @@ if __name__ == "__main__":
         "--ndims",
         type=int,
         nargs="+",
-        default=[1024],
-        help="List of dimensions to test (e.g., 128, 256, 512, 1024)",
+        default=[1024, 1536],
+        help="List of dimensions to test (e.g., 1024, 1536)",
     )
     args.add_argument(
         "--approximate",
