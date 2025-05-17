@@ -31,19 +31,10 @@ Assuming how often bit-level representation are now used in large-scale vector s
 - Loop unrolling and inlining.
 - 🔜 Floating-point operations instead of integer ones.
 
----
-
-Native optimizations are implemented [NumBa](https://numba.pydata.org/) and [Cppyy](https://cppyy.readthedocs.io/) JIT compiler for Python and C++, and are packed into [UV](https://docs.astral.sh/uv/)-compatible scripts.
-For benchmarks, a combination of random and real data is used.
-Luckily, modern embedding models are often trained in Quantization-aware manner, and precomputed WikiPedia embeddings are available on the HuggingFace portal:
-
-- [Co:here](https://huggingface.co/datasets/Cohere/wikipedia-2023-11-embed-multilingual-v3)
-- [MixedBread.ai](https://huggingface.co/datasets/mixedbread-ai/wikipedia-embed-en-2023-11)
-
-Most of those vectors are 1024- to 1536-dimensional, with datasets containing between 10M and 300M vectors for multilingual.
-
 ## Running Examples
 
+The most interesting part of the repository is the `kernels.py` file with all kinds of weird kernels worth reading through.
+Native optimizations are implemented [NumBa](https://numba.pydata.org/) and [Cppyy](https://cppyy.readthedocs.io/) JIT compiler for Python and C++, and are packed into [UV](https://docs.astral.sh/uv/)-compatible scripts.
 To benchmark and test the kernels on your hardware, run the following command:
 
 ```sh
@@ -51,13 +42,34 @@ $ uv run --script kernels.py --count 10000 --ndims "1024,1536"
 $ uv run --script kernels.py --help # for more options
 ```
 
-To download and quantize some baseline data.
+For other benchmarks real data can be used.
+Luckily, modern embedding models are often trained in Quantization-aware manner, and precomputed WikiPedia embeddings are available on the HuggingFace portal:
+
+- [Co:here](https://huggingface.co/datasets/Cohere/wikipedia-2023-11-embed-multilingual-v3)
+- [MixedBread.ai](https://huggingface.co/datasets/mixedbread-ai/wikipedia-embed-en-2023-11)
+
+Most of those vectors are 1024- to 1536-dimensional, with datasets containing between 10M and 300M vectors for multilingual.
 The following script will pull the English WikiPedia embeddings, save them to `cohere/en*`, and quantize them to 1-bit vectors:
 
 ```sh
 $ uv run --script download.py --dataset cohere-en --quantize
 $ uv run --script download.py --help # for more options
 ```
+
+Afterwards, you can use `index.py` to check the search accuracy over binary data vs the original `float32` data.
+That script is easy to modify to force USearch to use a `CompiledMetric` wrapping one of the kernels from `kernels.py`:
+
+```sh
+$ uv run --script indexing.py --data "cohere/" --limit 2e6 --dtype float16
+$ uv run --script indexing.py --help # for more options
+```
+
+On a 16-core Intel Sapphire Rapids, baseline kernels may have the following performance:
+
+| Representation | Insert Ops/S | Search Ops/s | Recall@1 |
+| :------------- | -----------: | -----------: | -------: |
+| Half-precision |       10'744 |       19'219 |  99.37 % |
+| Single-bit     |       41'980 |       70'497 |  98.07 % |
 
 ## Optimizations
 
