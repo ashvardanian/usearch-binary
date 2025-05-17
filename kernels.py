@@ -22,7 +22,7 @@
 # ? The last example will compute 10K by 10K meaning 100M distances for 512-bit,
 # ? 1024-bit and 1536-bit vectors. For each, only the top-1 nearest neighbor will
 # ? be fetched.
-from typing import List
+from typing import List, Literal
 import time
 
 import cppyy
@@ -34,6 +34,7 @@ from faiss import (
     omp_set_num_threads as faiss_set_threads,
 )
 from faiss.contrib.exhaustive_search import knn as faiss_knn
+from faiss.extra_wrappers import knn_hamming as faiss_knn_hamming
 from usearch.index import (
     Index,
     CompiledMetric,
@@ -372,12 +373,16 @@ def bench_faiss(
     vectors: np.ndarray,
     k: int,
     threads: int,
+    metric: Literal["Hamming", "Jaccard"],
 ) -> dict:
 
     faiss_set_threads(threads)
     n = vectors.shape[0]
     start = time.perf_counter()
-    _, matches = faiss_knn(vectors, vectors, k, metric=FAISS_METRIC_JACCARD)
+    if metric == "Jaccard":
+        _, matches = faiss_knn(vectors, vectors, k, metric=FAISS_METRIC_JACCARD)
+    else:
+        _, matches = faiss_knn_hamming(vectors, vectors, k)
     elapsed = time.perf_counter() - start
 
     computed = n * n
@@ -433,15 +438,13 @@ def bench_kernel(
     elapsed_s = time.perf_counter() - start
     bit_ops_per_distance = bits_per_vector * 2
     recalled_top_match: int = matches.count_matches(keys, count=1)
-    stats = {
+    return {
         "visited_members": matches.visited_members,
         "computed_distances": matches.computed_distances,
         "elapsed_s": elapsed_s,
         "bit_ops_per_s": matches.computed_distances * bit_ops_per_distance / elapsed_s,
         "recalled_top_match": recalled_top_match,
     }
-
-    return stats
 
 
 def main(
@@ -527,17 +530,19 @@ def main(
         # Run the benchmarks:
         print("-" * 80)
 
-        #
-        if True:
-            print(f"Profiling FAISS over {count:,} vectors")
+        # Provide FAISS baselines:
+        for name in ["Jaccard", "Hamming"]:
+            print(f"Profiling FAISS over {count:,} vectors with {name} metric")
             stats = bench_faiss(
                 vectors=vectors,
                 k=k,
                 threads=threads,
+                metric=name,
             )
             print(f"- BOP/S: {stats['bit_ops_per_s'] / 1e9:,.2f} G")
             print(f"- Recall@1: {stats['recalled_top_match'] / count:.2%}")
 
+        # Analyze all the kernels:
         for name, _, kernel_pointer in kernels_cpp_1024d + kernels_numba_1024d:
             print(f"Profiling `{name}` in USearch over {count:,} vectors")
             stats = bench_kernel(
