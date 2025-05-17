@@ -81,8 +81,7 @@ uint64_t hamming_distance_1024d(uint8_t const* first_vector, uint8_t const* seco
 
 As shown in [less_slow.cpp](https://github.com/ashvardanian/less_slow.cpp), decomposing `for`-loops (which are equivalent to `if`-statements and jumps) into unrolled kernels is a universally great idea.
 But the problem with the kernel above is that `_mm512_popcnt_epi64` is an expensive instruction, and most Intel CPUs can only execute it on a single CPU port.
-There are several ways to implement population counts on SIMD-capable x86 CPUs.
-Focusing on AVX-512, we can either use the `VPOPCNTQ` instruction, or the `VPSHUFB` instruction to shuffle bits and then use `VPSADBW` to sum them up:
+There are several ways to implement population counts on SIMD-capable x86 CPUs, mostly relying on the following instructions:
 
 - [VPOPCNTQ (ZMM, ZMM)](https://uops.info/html-instr/VPOPCNTQ_ZMM_ZMM.html):
     - On Ice Lake: 3 cycles latency and executes only on port 5.
@@ -94,6 +93,19 @@ Focusing on AVX-512, we can either use the `VPOPCNTQ` instruction, or the `VPSHU
 - [VPSADBW (ZMM, ZMM, ZMM)](https://uops.info/html-instr/VPSADBW_ZMM_ZMM_ZMM.html)
     - On Ice Lake: 3 cycles latency and executes only on port 5.
     - On Zen4: 3 cycles and executes on both port 0 and 1.
+- [VPDPBUSDS (ZMM, ZMM, ZMM)](https://uops.info/html-instr/VPDPBUSDS_ZMM_ZMM_ZMM.html)
+    - On Ice Lake: 5 cycles latency and executes only on port 0.
+    - On Zen4: 4 cycles and executes on both port 0 and 1.
+
+Interestingly, the `EVEX` variants of `VPSHUFB` and `VPDPBUSDS` instructions take different ports when dealing with `YMM` inputs on Ice Lake:
+
+- [VPSHUFB_EVEX (YMM, YMM, YMM)](https://uops.info/html-instr/VPSHUFB_EVEX_YMM_YMM_YMM.html):
+    - On Skylake-X: 1 cycle latency and executes only on port 5.
+    - On Ice Lake: 1 cycle latency and executes on port 1 and 5.
+    - On Zen4: 2 cycles and executes on both port 1 and 2.
+- [VPDPBUSDS_EVEX (YMM, YMM, YMM)](https://uops.info/html-instr/VPDPBUSDS_EVEX_YMM_YMM_YMM.html):
+    - On Ice Lake: 5 cycles latency and executes on both port 0 and 1.
+    - On Zen4: 4 cycles and executes on both port 0 and 1.
 
 So when implementing the Jaccard distance, the most important kernel for binary similarity indices using the `VPOPCNTQ`, we will have 4 such instruction invocations that will all stall on the same port number 5:
 
@@ -123,6 +135,51 @@ That's known to be a bottleneck and can be improved.
 
 A common trick is to implement population counts using lookup tables.
 The idea may seem costly compared to `_mm512_popcnt_epi64`, but depends on the number of counts that need to be performed.
+Here's what a minimal kernel for 245-dimensional Jaccard distance may look like:
+
+```c
+float jaccard_distance_256d(uint8_t const *first_vector, uint8_t const *second_vector) {
+    __m256i first = _mm256_loadu_epi8((__m256i const*)(first_vector));
+    __m256i second = _mm256_loadu_epi8((__m256i const*)(second_vector));
+    
+    __m256i intersection = _mm256_and_epi64(first, second);
+    __m256i union_ = _mm256_or_epi64(first, second);
+
+    __m256i low_mask = _mm256_set1_epi8(0x0f);
+    __m256i lookup = _mm256_set_epi8(
+        4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0,
+        4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0);
+    
+    __m256i intersection_low = _mm256_and_si256(intersection, low_mask);
+    __m256i intersection_high = _mm256_and_si256(_mm256_srli_epi16(intersection, 4), low_mask);
+    __m256i union_low = _mm256_and_si256(union_, low_mask);
+    __m256i union_high = _mm256_and_si256(_mm256_srli_epi16(union_, 4), low_mask);
+
+    __m256i intersection_popcount = _mm256_add_epi8(
+        _mm256_shuffle_epi8(lookup, intersection_low),
+        _mm256_shuffle_epi8(lookup, intersection_high));
+    __m256i union_popcount = _mm256_add_epi8(
+        _mm256_shuffle_epi8(lookup, union_low),
+        _mm256_shuffle_epi8(lookup, union_high));
+    
+    __m256i intersection_counts = _mm256_sad_epu8(intersection_popcount, _mm256_setzero_si256());
+    __m256i union_counts = _mm256_sad_epu8(union_popcount, _mm256_setzero_si256());
+    return 1.f - _mm256_reduce_add_epi64(intersection_counts) * 1.f / _mm256_reduce_add_epi64(union_counts);
+}
+```
+
+The `_mm256_reduce_add_epi64` is a product of our imagination, but you can guess what it does: 
+
+```c
+uint64_t _mm256_reduce_add_epi64(__m256i vec) {
+    __m128i lo128 = _mm256_castsi256_si128(vec);
+    __m128i hi128 = _mm256_extracti128_si256(vec, 1);
+    __m128i sum128 = _mm_add_epi64(lo128, hi128);
+    __m128i hi64 = _mm_unpackhi_epi64(sum128, sum128);
+    __m128i total = _mm_add_epi64(sum128, hi64);
+    return uint64_t(_mm_cvtsi128_si64(total));
+}
+```
 
 ### Harley-Seal and Odd-Majority [CSA](https://en.wikipedia.org/wiki/Carry-save_adder)
 
@@ -167,3 +224,19 @@ So $N$ "Odd-Major" population counts can cover the logic needed for the $2^N-1$ 
 - 31x `std::popcount` can be reduced to 5x.
 
 When dealing with 1024-dimensional bit-vectors on 64-bit machines, we can view them as 16x 64-bit words, leveraging the "Odd-Majority" trick to fold first 15x `std::popcount` into 4x, and then having 1x more call for the tail, thus shrinking from 16x to 5x calls, at the cost of several `XOR` and `AND` operations.
+Sadly, even on Intel Sapphire Rapids, none of the CSA schemes result in gains compared to `VPOPCNTQ`:
+
+```sh
+Profiling `jaccard_b1536_vpopcntq` in USearch over 1,000 vectors
+- BOP/S: 326.08 G
+- Recall@1: 100.00%
+Profiling `jaccard_b1536_vpopcntq_3csa` in USearch over 1,000 vectors
+- BOP/S: 310.28 G
+- Recall@1: 100.00%
+```
+
+## Links
+
+- [Population Counts in Chess Engines](https://www.chessprogramming.org/Population_Count).
+- [Faster Population Counts Using AVX2 Instructions](https://arxiv.org/abs/1611.07612), + [code](https://github.com/CountOnes/hamming_weight).
+- [Carry-Save Adders](https://en.wikipedia.org/wiki/Carry-save_adder).
