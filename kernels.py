@@ -65,6 +65,103 @@ def popcount_u64_numba(v):
     return v
 
 
+# region: 256d kernels
+
+
+@cfunc(types.float32(types.CPointer(types.uint64), types.CPointer(types.uint64)))
+def jaccard_u64x4_numba(a, b):
+    a_array = carray(a, 4)
+    b_array = carray(b, 4)
+    intersection = 0
+    union = 0
+    for i in range(4):
+        intersection += popcount_u64_numba(a_array[i] & b_array[i])
+        union += popcount_u64_numba(a_array[i] | b_array[i])
+    return 1.0 - (intersection + 1.0) / (union + 1.0)  # ! Avoid division by zero
+
+
+jaccard_u64x4_c = """
+static float jaccard_u64x4_c(uint8_t const * a, uint8_t const * b) {
+    uint32_t intersection = 0, union_ = 0;
+    uint64_t const *a64 = (uint64_t const *)a;
+    uint64_t const *b64 = (uint64_t const *)b;
+#pragma unroll
+    for (size_t i = 0; i != 4; ++i)
+        intersection += __builtin_popcountll(a64[i] & b64[i]),
+        union_ += __builtin_popcountll(a64[i] | b64[i]);
+    return 1.f - (intersection + 1.f) / (union_ + 1.f); // ! Avoid division by zero
+}
+"""
+
+# Define the AVX2 variant using the `vpshufb` and `vpsadbw` instruction.
+# It resorts to cheaper byte-shuffling instructions, than population counts.
+# Source: https://github.com/CountOnes/hamming_weight/blob/1dd7554c0fc39e01c9d7fa54372fd4eccf458875/src/sse_jaccard_index.c#L17
+jaccard_b256_vpshufb_sad = """
+#include <immintrin.h>
+
+inline uint64_t _mm256_reduce_add_epi64(__m256i vec) {
+    __m128i lo128 = _mm256_castsi256_si128(vec);
+    __m128i hi128 = _mm256_extracti128_si256(vec, 1);
+    __m128i sum128 = _mm_add_epi64(lo128, hi128);
+    __m128i hi64 = _mm_unpackhi_epi64(sum128, sum128);
+    __m128i total = _mm_add_epi64(sum128, hi64);
+    return uint64_t(_mm_cvtsi128_si64(total));
+}
+
+__attribute__((target("avx2,bmi2,avx")))
+static float jaccard_b256_vpshufb_sad(uint8_t const * first_vector, uint8_t const * second_vector) {
+    __m256i first = _mm256_loadu_epi8((__m256i const*)(first_vector));
+    __m256i second = _mm256_loadu_epi8((__m256i const*)(second_vector));
+    
+    __m256i intersection = _mm256_and_epi64(first, second);
+    __m256i union_ = _mm256_or_epi64(first, second);
+
+    __m256i low_mask = _mm256_set1_epi8(0x0f);
+    __m256i lookup = _mm256_set_epi8(
+        4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0,
+        4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0);
+    
+    __m256i intersection_low = _mm256_and_si256(intersection, low_mask);
+    __m256i intersection_high = _mm256_and_si256(_mm256_srli_epi16(intersection, 4), low_mask);
+    __m256i union_low = _mm256_and_si256(union_, low_mask);
+    __m256i union_high = _mm256_and_si256(_mm256_srli_epi16(union_, 4), low_mask);
+
+    __m256i intersection_popcount = _mm256_add_epi8(
+        _mm256_shuffle_epi8(lookup, intersection_low),
+        _mm256_shuffle_epi8(lookup, intersection_high));
+    __m256i union_popcount = _mm256_add_epi8(
+        _mm256_shuffle_epi8(lookup, union_low),
+        _mm256_shuffle_epi8(lookup, union_high));
+    
+    __m256i intersection_counts = _mm256_sad_epu8(intersection_popcount, _mm256_setzero_si256());
+    __m256i union_counts = _mm256_sad_epu8(union_popcount, _mm256_setzero_si256());
+    return 1.f - (_mm256_reduce_add_epi64(intersection_counts) + 1.f) / (_mm256_reduce_add_epi64(union_counts) + 1.f);
+}
+"""
+
+
+# Define the AVX-512 variant using the `vpopcntq` instruction.
+# It's known to over-rely on port 5 on x86 CPUs, so the next `vpshufb` variant should be faster.
+jaccard_b256_vpopcntq = """
+#include <immintrin.h>
+
+__attribute__((target("avx512f,avx512vl,bmi2,avx512bw,avx512dq")))
+static float jaccard_b256_vpopcntq(uint8_t const * first_vector, uint8_t const * second_vector) {
+    __m256i first = _mm256_loadu_epi8((__m256i const*)(first_vector));
+    __m256i second = _mm256_loadu_epi8((__m256i const*)(second_vector));
+    
+    __m256i intersection = _mm256_popcnt_epi64(_mm256_and_epi64(first, second));
+    __m256i union_ = _mm256_popcnt_epi64(_mm256_or_epi64(first, second));    
+    return 1.f - (_mm256_reduce_add_epi64(intersection) + 1.f) / (_mm256_reduce_add_epi64(union_) + 1.f);
+}
+"""
+
+cppyy.cppdef(jaccard_u64x4_c)
+cppyy.cppdef(jaccard_b256_vpshufb_sad)
+cppyy.cppdef(jaccard_b256_vpopcntq)
+
+# endregion
+
 # region: 1024d kernels
 
 
@@ -460,7 +557,7 @@ static float jaccard_b1536_vpopcntq_3csa(uint8_t const * first_vector, uint8_t c
     __m512i union_odd_count = _mm512_popcnt_epi64(union_odd);
     __m512i union_major_count = _mm512_popcnt_epi64(union_major);
 
-    // Shift left the majors by one to multiply by two
+    // Shift left the majors by 1 to multiply by 2
     __m512i intersection = _mm512_add_epi64(_mm512_slli_epi64(intersection_major_count, 1), intersection_odd_count);
     __m512i union_ = _mm512_add_epi64(_mm512_slli_epi64(union_major_count, 1), union_odd_count);
     return 1.f - (_mm512_reduce_add_epi64(intersection) + 1.f) / (_mm512_reduce_add_epi64(union_) + 1.f);
@@ -561,10 +658,37 @@ def bench_kernel(
 def main(
     count: int,
     k: int = 1,
-    ndims: List[int] = [1024, 1536],
+    ndims: List[int] = [256, 1024, 1536],
     approximate: bool = True,
     threads: int = 1,
 ):
+
+    kernels_cpp_256d = [
+        # C++:
+        (
+            "jaccard_u64x4_c",
+            cppyy.gbl.jaccard_u64x4_c,
+            cppyy.ll.addressof(cppyy.gbl.jaccard_u64x4_c),
+        ),
+        (
+            "jaccard_b256_vpshufb_sad",
+            cppyy.gbl.jaccard_b256_vpshufb_sad,
+            cppyy.ll.addressof(cppyy.gbl.jaccard_b256_vpshufb_sad),
+        ),
+        (
+            "jaccard_b256_vpopcntq",
+            cppyy.gbl.jaccard_b256_vpopcntq,
+            cppyy.ll.addressof(cppyy.gbl.jaccard_b256_vpopcntq),
+        ),
+    ]
+    kernels_numba_256d = [
+        # Baselines:
+        (
+            "jaccard_u64x4_numba",
+            jaccard_u64x4_numba,
+            jaccard_u64x4_numba.address,
+        ),
+    ]
 
     kernels_cpp_1024d = [
         # C++:
@@ -649,10 +773,12 @@ def main(
 
     # Group kernels by dimension:
     kernels_cpp_per_dimension = {
+        256: kernels_cpp_256d,
         1024: kernels_cpp_1024d,
         1536: kernels_cpp_1536d,
     }
     kernels_numba_per_dimension = {
+        256: kernels_numba_256d,
         1024: kernels_numba_1024d,
         1536: kernels_numba_1536d,
     }
@@ -729,8 +855,8 @@ if __name__ == "__main__":
         "--ndims",
         type=int,
         nargs="+",
-        default=[1024, 1536],
-        help="List of dimensions to test (e.g., 1024, 1536)",
+        default=[256, 1024, 1536],
+        help="List of dimensions to test (e.g., 256, 1024, 1536)",
     )
     args.add_argument(
         "--approximate",
