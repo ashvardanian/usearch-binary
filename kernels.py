@@ -737,10 +737,17 @@ if __name__ == "__main__":
         action="store_true",
         help="Use approximate search instead of exact search",
     )
+    args.add_argument(
+        "--threads",
+        type=int,
+        default=1,
+        help="Number of threads to use for the benchmark",
+    )
     args = args.parse_args()
     main(
         count=args.count,
         k=args.k,
         ndims=args.ndims,
         approximate=args.approximate,
+        threads=args.threads,
     )
