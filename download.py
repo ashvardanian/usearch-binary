@@ -7,13 +7,13 @@
 # ]
 # ///
 
-# ? This script downloads and processes precompute vector embeddings
+# ? This script downloads and processes precomputed vector embeddings
 # ? of WikiPedia from Hugging Face. To use it:
 # ?
 # ?     uv run --script download.py --dataset cohere-en
 # ?     uv run --script download.py --dataset cohere-en --quantize
 # ?
-# ? Consider checking the `harley-seal.py` script afterwards with tests
+# ? Consider checking the `kernels.py` script afterwards with tests
 # ? for advanced population-counting schemes and other optimizations.
 
 import math

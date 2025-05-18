@@ -17,7 +17,7 @@ float jaccard(std::uint8_t const* a_vector, std::uint8_t const* b_vector, std::s
     for (std::size_t i = 0; i < count_octets; ++i) {
         std::uint8_t a_octet = a_vector[i], b_octet = b_vector[i];
         intersection += std::popcount(a_octet & b_octet);
-        union_ += std::popcount(rst_octet | b_octet);
+        union_ += std::popcount(a_octet | b_octet);
     }
     return (float)intersection / (float)union_;
 }
