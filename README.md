@@ -29,6 +29,7 @@ Assuming how often bit-level representation are now used in large-scale vector s
 - Using lookup tables to speed up population counts.
 - Using [Harley-Seal](https://en.wikipedia.org/wiki/Harley%E2%80%93Seal_adder) and Odd-Majority [CSAs](https://en.wikipedia.org/wiki/Carry-save_adder) for population counts.
 - Loop unrolling and inlining.
+- 🔜 Precomputed Jaccard JUTs.
 - 🔜 Floating-point operations instead of integer ones.
 
 ## Running Examples
