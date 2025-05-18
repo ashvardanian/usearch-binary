@@ -95,7 +95,8 @@ def download_files(
     embeddings_column: str = "emb",
     quantize: bool = False,
 ):
-    workers = multiprocessing.cpu_count() - 2
+    # Leave at least one thread free to keep the system responsive
+    workers = max(1, multiprocessing.cpu_count() - 2)
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_url = {
             executor.submit(
